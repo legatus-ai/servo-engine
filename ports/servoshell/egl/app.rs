@@ -652,13 +652,6 @@ impl App {
         }
     }
 
-    pub fn set_throttled(&self, throttled: bool) {
-        if let Some(webview) = self.active_or_newest_webview() {
-            webview.set_throttled(throttled);
-            self.spin_event_loop();
-        }
-    }
-
     pub fn ime_dismissed(&self) {
         if let Some(webview) = self.active_or_newest_webview() {
             webview.notify_input_event(InputEvent::Ime(ImeEvent::Dismissed));
