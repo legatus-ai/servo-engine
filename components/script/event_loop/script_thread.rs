@@ -48,7 +48,7 @@ use embedder_traits::{
     InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
     Theme, ViewportDetails, WebDriverScriptCommand,
 };
-use encoding_rs::Encoding;
+use encoding_rs::{Encoding, UTF_8};
 use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
 use headers::{HeaderMapExt, LastModified, ReferrerPolicy as ReferrerPolicyHeader};
 use http::header::REFRESH;
@@ -3506,7 +3506,14 @@ impl ScriptThread {
         let encoding_hint_from_content_type = content_type
             .as_ref()
             .and_then(|mime| mime.get_parameter(CHARSET))
-            .and_then(|charset| Encoding::for_label(charset.as_bytes()));
+            .and_then(|charset| Encoding::for_label(charset.as_bytes()))
+            .or_else(|| {
+                // JSON text is always UTF-8 absent an explicit charset
+                // parameter (RFC 8259 Section 8.1), so it must not fall
+                // through to container-encoding inheritance or sniffing.
+                let mime = content_type.as_ref()?;
+                (mime.subtype == "json" || mime.has_suffix("json")).then_some(UTF_8)
+            });
 
         let is_html_document = match content_type {
             Some(ref mime) if mime.type_ == APPLICATION && mime.has_suffix("xml") => {
