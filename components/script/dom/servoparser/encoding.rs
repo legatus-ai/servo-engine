@@ -168,19 +168,29 @@ impl DetectingState {
                 .and_then(|domain| domain.rsplit('.').next())
                 .map(|tld| tld.as_bytes());
             let guessed_encoding = encoding_detector.guess(tld, Utf8Detection::Allow);
+            // A UTF-8 guess with no other signal (no BOM, charset, or
+            // prescan hit) is not actionable: unlabeled content must fall
+            // back to the default encoding below. Chrome does not apply
+            // UTF-8 autodetect either (see "No (UTF-8) sniffing allowed").
+            if guessed_encoding != UTF_8 {
+                log::debug!(
+                    "chardetng determined that the document encoding is {}",
+                    guessed_encoding.name()
+                );
+                return Some(guessed_encoding);
+            }
             log::debug!(
-                "chardetng determined that the document encoding is {}",
-                guessed_encoding.name()
+                "chardetng guessed UTF-8 with no other signal; falling back to the default encoding"
             );
-            return Some(guessed_encoding);
         }
 
         // Step 9. Otherwise, return an implementation-defined or user-specified default character encoding,
         // with the confidence tentative.
         // TODO: The spec has a cool table here for determining an appropriate fallback encoding based on the
-        // user locale. Use it!
-        log::debug!("Failed to determine encoding of byte stream, falling back to UTF-8");
-        Some(UTF_8)
+        // user locale. Use it! For now use windows-1252 (the Western-locale
+        // default, matching Chrome) instead of UTF-8.
+        log::debug!("Failed to determine encoding of byte stream, falling back to windows-1252");
+        Some(WINDOWS_1252)
     }
 
     fn finish(&mut self, document: &Document) -> &'static Encoding {
