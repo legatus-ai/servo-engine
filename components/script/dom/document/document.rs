@@ -2451,6 +2451,15 @@ impl Document {
                     return;
                 }
 
+                // Scroll to the fragment before firing `load`: the target
+                // element (`:target`) must already match in `load` listeners,
+                // as in Chrome. (Spec-wise this belongs to history-step
+                // application; the document is fully parsed by now, so the
+                // indicated element exists and this is observably equivalent.)
+                if let Some(fragment) = document.url().fragment() {
+                    document.scroll_to_the_fragment(cx, fragment);
+                }
+
                 // Step 9.4. Set the Document's load timing info's load event start time to the current high resolution time given window.
                 update_with_current_instant(&document.navigation_timing.load_event_start);
 
@@ -2501,10 +2510,6 @@ impl Document {
 
                 // Step 9.13. Queue the navigation timing entry for the Document.
                 // TODO
-
-                if let Some(fragment) = document.url().fragment() {
-                    document.scroll_to_the_fragment(cx, fragment);
-                }
             }));
 
         // Step 9.
