@@ -2205,25 +2205,42 @@ impl IndexedDBManager {
                     .databases
                     .iter()
                     .filter_map(|(description, info)| {
-                        // Step 4.3: For each db of databases:
-                        if let Ok(version) = info.version() {
-                            // Step 4.3.4: If db’s version is 0, then continue.
-                            if version == 0 {
-                                None
-                            } else {
-                                // Step 4.3.5: Let info be a new IDBDatabaseInfo dictionary.
-                                // Step 4.3.6: Set info’s name dictionary member to db’s name.
-                                // Step 4.3.7: Set info’s version dictionary member to db’s version.
-                                // Step 4.3.8: Append info to result.
-                                if description.origin == origin {
-                                    Some(DatabaseInfo {
-                                        name: description.name.clone(),
-                                        version,
-                                    })
-                                } else {
-                                    None
-                                }
-                            }
+                        // Step 4.3: For each db of databases. Report the
+                        // committed version: a pending versionchange upgrade
+                        // bumps the stored version immediately (reverted on
+                        // abort), so use its pre-upgrade version here, and
+                        // skip databases that do not exist yet (old == 0).
+                        let pending_old = self
+                            .connection_queues
+                            .get(description)
+                            .and_then(|queue| {
+                                queue.iter().find_map(|request| match request {
+                                    OpenRequest::Open { pending_upgrade, .. } => {
+                                        pending_upgrade.as_ref().map(|upgrade| upgrade.old)
+                                    },
+                                    _ => None,
+                                })
+                            });
+                        let version = match pending_old {
+                            Some(old) => old,
+                            None => match info.version() {
+                                Ok(version) => version,
+                                Err(_) => return None,
+                            },
+                        };
+                        // Step 4.3.4: If db’s version is 0, then continue.
+                        if version == 0 {
+                            return None;
+                        }
+                        // Step 4.3.5: Let info be a new IDBDatabaseInfo dictionary.
+                        // Step 4.3.6: Set info’s name dictionary member to db’s name.
+                        // Step 4.3.7: Set info’s version dictionary member to db’s version.
+                        // Step 4.3.8: Append info to result.
+                        if description.origin == origin {
+                            Some(DatabaseInfo {
+                                name: description.name.clone(),
+                                version,
+                            })
                         } else {
                             None
                         }
