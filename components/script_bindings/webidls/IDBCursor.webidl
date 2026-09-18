@@ -16,8 +16,8 @@ interface IDBCursor {
   readonly attribute any primaryKey;
   [SameObject] readonly attribute IDBRequest request;
 
-  // undefined advance([EnforceRange] unsigned long count);
-  // undefined continue(optional any key);
+  [Throws] undefined advance([EnforceRange] unsigned long count);
+  [Throws] undefined continue(optional any key);
   // undefined continuePrimaryKey(any key, any primaryKey);
 
   // [NewObject] IDBRequest update(any value);

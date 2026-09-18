@@ -66,6 +66,10 @@ impl IDBIndex {
             global,
         )
     }
+
+    pub(crate) fn object_store(&self) -> DomRoot<IDBObjectStore> {
+        DomRoot::from_ref(&*self.object_store)
+    }
 }
 
 impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {

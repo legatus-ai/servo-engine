@@ -8,18 +8,21 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
+use js::gc::HandleValue;
 use js::jsapi::Heap;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::MutableHandleValue;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
-use storage_traits::indexeddb::{IndexedDBKeyRange, IndexedDBKeyType, IndexedDBRecord};
+use storage_traits::indexeddb::{
+    AsyncOperation, AsyncReadOnlyOperation, IndexedDBKeyRange, IndexedDBKeyType, IndexedDBRecord,
+};
 
 use crate::dom::bindings::codegen::Bindings::IDBCursorBinding::{
     IDBCursorDirection, IDBCursorMethods,
 };
 use crate::dom::bindings::codegen::UnionTypes::IDBObjectStoreOrIDBIndex;
-use crate::dom::bindings::error::Error;
+use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::structuredclone;
@@ -28,7 +31,7 @@ use crate::dom::indexeddb::idbindex::IDBIndex;
 use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
 use crate::dom::indexeddb::idbrequest::IDBRequest;
 use crate::dom::indexeddb::idbtransaction::IDBTransaction;
-use crate::dom::indexeddb::key::key_type_to_jsval;
+use crate::dom::indexeddb::key::{convert_value_to_key, key_type_to_jsval};
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[expect(unused)]
@@ -245,6 +248,118 @@ impl IDBCursorMethods<crate::DomTypeHolder> for IDBCursor {
         self.request
             .get()
             .expect("IDBCursor.request should be set when cursor is opened")
+    }
+
+    /// <https://w3c.github.io/IndexedDB/#dom-idbcursor-continue>
+    fn Continue(&self, key: HandleValue) -> Fallible<()> {
+        // The binding does not pass a JSContext for this method (its
+        // return type needs none), so recover it from the script thread.
+        // This runs on the script thread; no other context borrow is live.
+        #[expect(unsafe_code)]
+        let mut cx = unsafe { JSContext::get_from_thread() }
+            .expect("IndexedDB cursor iteration runs on the script thread");
+
+        // If key is given (i.e. not undefined), convert it to a key
+        // (DataError on failure) and reject keys pointing backwards for
+        // this direction.
+        let key = if key.get().is_undefined() {
+            None
+        } else {
+            let key = convert_value_to_key(&mut cx, key, None)?.into_result()?;
+            let position = self.position.borrow();
+            let backwards = match self.direction {
+                IDBCursorDirection::Next | IDBCursorDirection::Nextunique => {
+                    position.as_ref().is_some_and(|position| key < *position)
+                },
+                IDBCursorDirection::Prev | IDBCursorDirection::Prevunique => {
+                    position.as_ref().is_some_and(|position| key > *position)
+                },
+            };
+            if backwards {
+                return Err(Error::Data(None));
+            }
+            Some(key)
+        };
+
+        self.advance_inner(&mut cx, key, None)
+    }
+
+    /// <https://w3c.github.io/IndexedDB/#dom-idbcursor-advance>
+    fn Advance(&self, count: u32) -> Fallible<()> {
+        // If count is zero, throw a TypeError.
+        if count == 0 {
+            return Err(Error::Type(
+                c"Calling advance() with count argument 0".to_owned(),
+            ));
+        }
+
+        // The binding does not pass a JSContext for this method (its
+        // return type needs none), so recover it from the script thread.
+        #[expect(unsafe_code)]
+        let mut cx = unsafe { JSContext::get_from_thread() }
+            .expect("IndexedDB cursor iteration runs on the script thread");
+
+        self.advance_inner(&mut cx, None, Some(count))
+    }
+}
+
+impl IDBCursor {
+    /// Shared steps of `continue()` and `advance()`: liveness checks, then
+    /// an async re-iteration reusing the cursor's request. Clears `got
+    /// value` synchronously so a second call while iteration is outstanding
+    /// throws InvalidStateError; the flag is restored when the async
+    /// iteration yields a record.
+    fn advance_inner(
+        &self,
+        cx: &mut JSContext,
+        key: Option<IndexedDBKeyType>,
+        count: Option<u32>,
+    ) -> Fallible<()> {
+        // Let transaction be this cursor's transaction. If it is not
+        // active, throw a TransactionInactiveError.
+        let transaction = &self.transaction;
+        if !transaction.is_active() || !transaction.is_usable() {
+            return Err(Error::TransactionInactive(None));
+        }
+
+        // Resolve the object store behind this cursor's source. If source
+        // has been deleted, throw an InvalidStateError.
+        let store = match &self.source {
+            ObjectStoreOrIndex::ObjectStore(store) => DomRoot::from_ref(&**store),
+            ObjectStoreOrIndex::Index(index) => index.object_store(),
+        };
+        store.verify_not_deleted()?;
+
+        // If this cursor's got value flag is false, throw an InvalidStateError.
+        if !self.got_value.get() {
+            return Err(Error::InvalidState(None));
+        }
+        self.got_value.set(false);
+
+        // Iterate from the cursor's range, reusing the cursor's request so
+        // success fires on it again with the advanced cursor.
+        let rooted = DomRoot::from_ref(self);
+        let iteration_param = IterationParam {
+            cursor: Trusted::new(&rooted),
+            key,
+            primary_key: None,
+            count,
+        };
+        let range = self.range.clone();
+        let request = self.Request();
+        IDBRequest::execute_async(
+            cx,
+            &store,
+            |callback| {
+                AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
+                    callback,
+                    key_range: range,
+                })
+            },
+            Some(request),
+            Some(iteration_param),
+        )?;
+        Ok(())
     }
 }
 
