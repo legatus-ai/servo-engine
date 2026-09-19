@@ -8,7 +8,7 @@ Repro page + probe commands: see source doc (`servo-gaps.html`).
 
 | # | Request | Status | WPT before | WPT after | Commit |
 |---|---------|--------|------------|-----------|--------|
-| 1 | Range geometry: 1-char text range returns 4 rects, first ~580px wide at wrong top (want 1 glyph box, Edge: 46,14,7,16) | doing | | | |
+| 1 | Range geometry: 1-char text range returns 4 rects, first ~580px wide at wrong top (want 1 glyph box, Edge: 46,14,7,16) | done | servo-gaps repro: 2 boxes incl. 780px line box | 1 box [45.8,14.2,7.0,16.1]; word/collapsed/end-caret/full-line exact; multi-node untouched (nested-text abspos case still FAIL, separate bug) | 8804f281 |
 | 2 | Caret from point: `caretPositionFromPoint` + `caretRangeFromPoint` + `Selection.modify` all undefined | todo | | | |
 | 3 | `document.execCommand` missing on Servo 0.5 (insertText/selectAll/copy) — verify vs our line (execCommand pref already on; insertText/bold probed working) | todo | | | |
 | 4 | `var()` unresolved in SVG presentation attributes (`stroke="var(--c)"` → none; currentColor + class rules OK) | todo | | | |
@@ -19,3 +19,4 @@ Out of scope (Legatus side): range-input dragging polyfill, embedder hooks
 
 ## Log
 - 2026-09-19: tracker created; order/scope corrected per Vitruvius (var() only, not currentColor/class; range = 4 rects not ~45). Starting #1.
+- 2026-09-19: #1 done (8804f281). New TextRectsQuery: fragment-tree walk + OffsetMap + glyph-advance clipping + same-line merge + caret rects.
