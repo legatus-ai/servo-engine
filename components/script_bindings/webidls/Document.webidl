@@ -212,13 +212,15 @@ Document includes DocumentOrShadowRoot;
 
 // https://drafts.csswg.org/cssom-view/#extensions-to-the-document-interface
 partial interface Document {
-  // CaretPosition? caretPositionFromPoint(double x, double y, optional CaretPositionFromPointOptions options = {});
+  CaretPosition? caretPositionFromPoint(double x, double y, optional CaretPositionFromPointOptions options = {});
+  // Legacy WebKit extension, still supported by Chromium for caret probing.
+  Range? caretRangeFromPoint(float x, float y);
   readonly attribute Element? scrollingElement;
 };
 
-// dictionary CaretPositionFromPointOptions {
-//   sequence<ShadowRoot> shadowRoots = [];
-// };
+dictionary CaretPositionFromPointOptions {
+  sequence<ShadowRoot> shadowRoots = [];
+};
 
 // https://w3c.github.io/selection-api/#dom-document
 partial interface Document {

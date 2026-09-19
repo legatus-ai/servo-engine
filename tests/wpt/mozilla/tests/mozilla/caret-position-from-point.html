@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>document.caretPositionFromPoint / caretRangeFromPoint (Legatus #2)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body style="font:14px sans-serif;margin:0">
+<p id="p" style="margin:10px">Hello selection world.</p>
+<script>
+"use strict";
+
+test(() => {
+  const probe = document.getElementById("p").firstChild;
+  const probeRect = document.createRange();
+  probeRect.setStart(probe, 6);
+  probeRect.setEnd(probe, 7);
+  const box = probeRect.getClientRects()[0];
+  assert_greater_than(box.width, 0, "reference glyph box exists");
+  // Middle of the 7th character ("s" of "selection").
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  const pos = document.caretPositionFromPoint(x, y);
+  assert_not_equals(pos, null, "caret position found");
+  assert_equals(pos.offsetNode, probe, "offset node is the text");
+  assert_equals(pos.offset, 6, "offset is the character boundary");
+}, "caretPositionFromPoint hits the character under the point");
+
+test(() => {
+  assert_equals(
+    document.caretPositionFromPoint(-5, -5), null,
+    "negative point returns null");
+  assert_equals(
+    document.caretPositionFromPoint(100000, 100000), null,
+    "far outside viewport returns null");
+}, "caretPositionFromPoint out of viewport returns null");
+
+test(() => {
+  const probe = document.getElementById("p").firstChild;
+  const probeRect = document.createRange();
+  probeRect.setStart(probe, 0);
+  probeRect.setEnd(probe, 1);
+  const box = probeRect.getClientRects()[0];
+  const range = document.caretRangeFromPoint(
+    box.left + box.width / 2, box.top + box.height / 2);
+  assert_not_equals(range, null, "caret range found");
+  assert_equals(range.startContainer, probe, "start container is the text");
+  assert_equals(range.startOffset, 0, "collapsed at first character");
+  assert_true(range.collapsed, "range is collapsed");
+  assert_equals(
+    document.caretRangeFromPoint(-1, -1), null,
+    "negative point returns null");
+}, "caretRangeFromPoint returns a collapsed range");
+</script>
+</body>
+</html>

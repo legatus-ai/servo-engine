@@ -226,6 +226,8 @@ pub(crate) mod bluetooth;
 pub(crate) use self::bluetooth::*;
 mod canvas;
 pub(crate) use self::canvas::*;
+pub(crate) mod caretposition;
+pub(crate) use self::caretposition::*;
 pub(crate) mod characterdata;
 pub(crate) use self::characterdata::*;
 pub(crate) mod clipboard;

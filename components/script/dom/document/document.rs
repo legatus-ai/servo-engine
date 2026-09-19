@@ -15,7 +15,9 @@ use std::str::FromStr;
 use std::sync::{Arc as StdArc, LazyLock};
 use std::time::Duration;
 
+use app_units::Au;
 use bitflags::bitflags;
+use euclid::Point2D;
 use chrono::Local;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use content_security_policy::{CspList, Policy as CspPolicy, PolicyDisposition};
@@ -66,6 +68,7 @@ use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSend;
 use servo_base::id::{LCPCandidateID, PipelineId, WebViewId};
+use servo_base::text::{AssumeUnder4GB, Utf32CodeUnits};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
 use servo_constellation_traits::{
@@ -96,7 +99,8 @@ use crate::dom::bindings::callback::ExceptionHandling;
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEvent_Binding::BeforeUnloadEventMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
-    DocumentMethods, DocumentReadyState, DocumentVisibilityState, NamedPropertyValue,
+    CaretPositionFromPointOptions, DocumentMethods, DocumentReadyState, DocumentVisibilityState,
+    NamedPropertyValue,
 };
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ScrollLogicalPosition;
 use crate::dom::bindings::codegen::Bindings::EventBinding::Event_Binding::EventMethods;
@@ -138,6 +142,8 @@ use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::css::cssstylesheet::CSSStyleSheet;
 use crate::dom::css::fontfaceset::FontFaceSet;
 use crate::dom::css::stylesheetlist::{StyleSheetList, StyleSheetListOwner};
+use crate::dom::caretposition::CaretPosition;
+use crate::dom::characterdata::CharacterData;
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
 use crate::dom::customevent::CustomEvent;
 use crate::dom::document::accessibility_data::AccessibilityData;
@@ -6669,6 +6675,41 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         )
     }
 
+    /// <https://drafts.csswg.org/cssom-view/#dom-document-caretpositionfrompoint>
+    fn CaretPositionFromPoint(
+        &self,
+        x: Finite<f64>,
+        y: Finite<f64>,
+        _options: &CaretPositionFromPointOptions,
+    ) -> Option<DomRoot<CaretPosition>> {
+        // The binding passes no JSContext; recover it from the script thread
+        // to reflect the result object.
+        #[expect(unsafe_code)]
+        let mut cx = unsafe { JSContext::get_from_thread() }
+            .expect("caretPositionFromPoint runs on the script thread");
+        let (node, offset) = self.caret_node_and_offset_at_point(x, y)?;
+        Some(CaretPosition::new(
+            &mut cx,
+            &self.global(),
+            None,
+            &node,
+            offset,
+        ))
+    }
+
+    /// Legacy WebKit extension, still supported by Chromium.
+    fn CaretRangeFromPoint(&self, x: Finite<f32>, y: Finite<f32>) -> Option<DomRoot<Range>> {
+        // Same thread-local context recovery as above.
+        #[expect(unsafe_code)]
+        let mut cx = unsafe { JSContext::get_from_thread() }
+            .expect("caretRangeFromPoint runs on the script thread");
+        let (node, offset) = self.caret_node_and_offset_at_point(
+            Finite::wrap(*x as f64),
+            Finite::wrap(*y as f64),
+        )?;
+        Some(Range::new(&mut cx, self, &node, offset, &node, offset))
+    }
+
     /// <https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement>
     fn GetScrollingElement(&self) -> Option<DomRoot<Element>> {
         // Step 1. If the Document is in quirks mode, follow these steps:
@@ -7299,5 +7340,37 @@ impl Iterator for SameOriginDescendantNavigablesIterator {
             };
         }
         None
+    }
+}
+
+impl Document {
+    /// Shared backing for `caretPositionFromPoint` /
+    /// `caretRangeFromPoint`: hit-test (x, y) CSS px against text and
+    /// return the DOM node plus UTF-16 offset, or None.
+    pub(crate) fn caret_node_and_offset_at_point(
+        &self,
+        x: Finite<f64>,
+        y: Finite<f64>,
+    ) -> Option<(DomRoot<Node>, u32)> {
+        let window = self.window();
+        // No viewport, or outside it: no caret position.
+        if !self.has_browsing_context {
+            return None;
+        }
+        let (x, y) = (*x as f32, *y as f32);
+        if x < 0. || y < 0. || x > window.InnerWidth() as f32 || y > window.InnerHeight() as f32 {
+            return None;
+        }
+        let root = self.GetDocumentElement()?;
+        let point = Point2D::new(Au::from_f32_px(x), Au::from_f32_px(y));
+        let (node, offset) = window.text_index_query_on_node_for_event(root.upcast(), point)?;
+        // The layout query yields UTF-32 offsets into transformed text;
+        // the DOM API speaks UTF-16 offsets into the node text.
+        let text = node
+            .downcast::<CharacterData>()?
+            .data()
+            .to_string();
+        let offset = Utf32CodeUnits(offset.0).to_utf16_code_units_in(AssumeUnder4GB, &text);
+        Some((node, offset.0))
     }
 }
