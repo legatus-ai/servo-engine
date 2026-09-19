@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Range.getClientRects() partial-text clipping (Legatus #1)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body style="font:14px sans-serif">
+<p id="a">First paragraph here.</p>
+<p id="b">Second paragraph here.</p>
+<p id="rtl">שלום עולם</p>
+<script>
+"use strict";
+function rects(range) {
+  return Array.from(range.getClientRects());
+}
+
+test(() => {
+  // Multi-node range, partial text at both ends: both ends clipped.
+  const a = document.getElementById("a").firstChild;
+  const b = document.getElementById("b").firstChild;
+  const range = document.createRange();
+  range.setStart(a, 6);
+  range.setEnd(b, 6);
+  const list = rects(range);
+  assert_greater_than(list.length, 0, "rects exist");
+  // Start clipped: first rect starts right of the full first line.
+  const fullA = document.createRange();
+  fullA.setStart(a, 0);
+  fullA.setEnd(a, a.length);
+  const fullFirst = rects(fullA)[0];
+  assert_greater_than(list[0].left, fullFirst.left, "start clipped");
+  assert_less_than(list[0].width, fullFirst.width, "start narrower than full");
+  // End clipped: last rect ends left of the full second line.
+  const fullB = document.createRange();
+  fullB.setStart(b, 0);
+  fullB.setEnd(b, b.length);
+  const fullBFirst = rects(fullB)[0];
+  const last = list[list.length - 1];
+  assert_less_than(last.right, fullBFirst.right, "end clipped");
+}, "partial text at both ends of a multi-node range is clipped");
+
+test(() => {
+  // Element start container contributes no box of its own.
+  const container = document.getElementById("a");
+  const b = document.getElementById("b").firstChild;
+  const range = document.createRange();
+  range.setStart(container, 0);
+  range.setEnd(b, 6);
+  const containerBox = container.getBoundingClientRect();
+  for (const rect of rects(range)) {
+    const same =
+      rect.left === containerBox.left && rect.top === containerBox.top &&
+      rect.width === containerBox.width && rect.height === containerBox.height;
+    assert_false(same, "no rect equals the start container's whole box");
+  }
+}, "element start container contributes no box");
+
+test(() => {
+  // RTL-script partial range: no trustworthy geometry, empty list.
+  const t = document.getElementById("rtl").firstChild;
+  const range = document.createRange();
+  range.setStart(t, 0);
+  range.setEnd(t, 2);
+  assert_equals(rects(range).length, 0, "RTL partial range is empty");
+}, "RTL partial range returns no boxes");
+</script>
+</body>
+</html>

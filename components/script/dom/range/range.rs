@@ -379,19 +379,29 @@ impl Range {
             return vec![];
         }
 
+        // RTL-script text, whose visual order the LTR advance walk in
+        // layout does not model. Such ranges get no boxes rather than
+        // wrongly positioned slices.
+        let is_rtl_text = |node: &Node| -> bool {
+            node.downcast::<CharacterData>().is_some_and(|data| {
+                data.data().chars().any(|c| {
+                    matches!(c,
+                        '\u{0590}'..='\u{08FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}',
+                    )
+                })
+            })
+        };
+
         // Glyph-clipped boxes of a slice of one text node. UTF-16 boundary
         // offsets are converted to the UTF-32 units layout uses. Returns
         // None when layout has no boxes (caller falls back to whole boxes),
-        // and for RTL-script text, whose visual order the LTR advance walk
-        // does not model (legacy whole boxes instead of wrong slices).
+        // and for RTL-script text (see above).
         let text_slice_rects = |node: &Node, start16: u32, end16: u32| -> Option<Vec<Rect<Au, CSSPixel>>> {
-            let data = node.downcast::<CharacterData>()?;
-            let text = data.data();
-            if text.chars().any(|c| matches!(c,
-                '\u{0590}'..='\u{08FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}',
-            )) {
+            if is_rtl_text(node) {
                 return None;
             }
+            let data = node.downcast::<CharacterData>()?;
+            let text = data.data();
             let to_utf32 = |offset: u32| Utf16CodeUnits(offset).to_utf32_code_units_in(&text);
             let rects = node
                 .owner_window()
@@ -401,6 +411,9 @@ impl Range {
 
         // Fast path: both boundary points in the same text node.
         if std::ptr::eq(&*start, &*end) {
+            if is_rtl_text(&start) {
+                return vec![];
+            }
             if let Some(rects) =
                 text_slice_rects(&start, self.start_offset(), self.end_offset())
             {
@@ -420,8 +433,10 @@ impl Range {
 
         // General case: clip partial text at both ends, whole boxes between.
         // Note `following_nodes` excludes the start node itself, so prepend
-        // it (unless start and end coincide, handled by the fast path above
-        // or the collapsed path below).
+        // it when it is a text node needing clipping (an element start
+        // container is not selected by the range and contributes nothing).
+        // Same-node ranges take the fast path above (or the collapsed path
+        // below when the query has no boxes).
         let same_node = std::ptr::eq(&*start, &*end);
         let document = start.owner_doc();
         let unrooted_end = end.as_unrooted(no_gc);
@@ -430,12 +445,13 @@ impl Range {
             .take_while(move |node| *node != *end)
             .chain(iter::once(unrooted_end))
             .collect();
-        let nodes: Vec<_> = if same_node {
-            following
-        } else {
+        let prepended_start = !same_node && start.is::<CharacterData>();
+        let nodes: Vec<_> = if prepended_start {
             iter::once(start.as_unrooted(no_gc))
                 .chain(following.into_iter())
                 .collect()
+        } else {
+            following
         };
         let last = nodes.len().saturating_sub(1);
         let start_offset = self.start_offset();
@@ -444,7 +460,7 @@ impl Range {
             .into_iter()
             .enumerate()
             .flat_map(|(index, node)| {
-                let endpoint = if index == 0 {
+                let endpoint = if index == 0 && prepended_start {
                     let text_len = node
                         .downcast::<CharacterData>()
                         .map(|data| data.data().encode_utf16().count() as u32);
