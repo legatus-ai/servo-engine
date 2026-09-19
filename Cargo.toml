@@ -470,17 +470,20 @@ codegen-units = 1
 # content-security-policy = { path = "../rust-content-security-policy" }
 #
 # Or for Stylo:
-#
-# [patch."https://github.com/servo/stylo"]
-# selectors = { path = "../stylo/selectors" }
-# servo_arc = { path = "../stylo/servo_arc" }
-# stylo = { path = "../stylo/style" }
-# stylo_atoms = { path = "../stylo/stylo_atoms" }
-# stylo_dom = { path = "../stylo/stylo_dom" }
-# stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-# stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-# stylo_traits = { path = "../stylo/style_traits" }
-#
+# Legatus #7: sibling stylo checkout (branch legatus, commit b26e41f)
+# with text-overflow ungated. Requires the ../stylo sibling checkout at
+# that branch; keep it in sync and re-apply the longhands.toml hunk
+# there after every upstream stylo rebase. The pane renderer manifest
+# must carry the same patch to get the ellipsis.
+[patch."https://github.com/servo/stylo"]
+selectors = { path = "../stylo/selectors" }
+servo_arc = { path = "../stylo/servo_arc" }
+stylo = { path = "../stylo/style" }
+stylo_atoms = { path = "../stylo/stylo_atoms" }
+stylo_dom = { path = "../stylo/stylo_dom" }
+stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
+stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
+stylo_traits = { path = "../stylo/style_traits" }
 # Or for another Git dependency:
 #
 # [patch."https://github.com/servo/<repository>"]
