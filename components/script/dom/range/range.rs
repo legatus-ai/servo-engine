@@ -380,7 +380,8 @@ impl Range {
         }
 
         // RTL-script text, whose visual order the LTR advance walk in
-        // layout does not model. Such ranges get no boxes rather than
+        // layout does not model. Such ranges fall back to the legacy
+        // whole text-node boxes (imprecise but present) rather than
         // wrongly positioned slices.
         let is_rtl_text = |node: &Node| -> bool {
             node.downcast::<CharacterData>().is_some_and(|data| {
@@ -412,7 +413,23 @@ impl Range {
         // Fast path: both boundary points in the same text node.
         if std::ptr::eq(&*start, &*end) {
             if is_rtl_text(&start) {
-                return vec![];
+                // No trustworthy per-slice geometry: return the whole line
+                // boxes instead of wrongly positioned slices.
+                if let Some(data) = start.downcast::<CharacterData>() {
+                    let len = data.data().encode_utf16().count() as u32;
+                    let text = data.data();
+                    let to_utf32 =
+                        |offset: u32| Utf16CodeUnits(offset).to_utf32_code_units_in(&text);
+                    let rects = start.owner_window().text_rects_query(
+                        &start,
+                        to_utf32(0),
+                        to_utf32(len),
+                    );
+                    if !rects.is_empty() {
+                        return rects;
+                    }
+                }
+                return start.border_boxes();
             }
             if let Some(rects) =
                 text_slice_rects(&start, self.start_offset(), self.end_offset())

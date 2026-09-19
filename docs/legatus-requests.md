@@ -14,6 +14,7 @@ Repro page + probe commands: see source doc (`servo-gaps.html`).
 | 3 | `document.execCommand` missing on Servo 0.5 (insertText/selectAll/copy) — verify vs our line (execCommand pref already on; insertText/bold probed working) | todo | | | |
 | 4 | `var()` unresolved in SVG presentation attributes (`stroke="var(--c)"` → none; currentColor + class rules OK) | todo | | | |
 | 5 | Emoji without colour font fallback draws empty box (low priority) | todo | | | |
+| 7 | LOW (after #5): `text-overflow: ellipsis` not rendered (clips without drawing '…'). WPT: css/css-overflow/text-overflow-* | todo | | | |
 
 Out of scope (Legatus side): range-input dragging polyfill, embedder hooks
 (navigation allowlist, downloads, permissions, file chooser).

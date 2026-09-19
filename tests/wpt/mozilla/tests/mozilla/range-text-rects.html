@@ -58,13 +58,19 @@ test(() => {
 }, "element start container contributes no box");
 
 test(() => {
-  // RTL-script partial range: no trustworthy geometry, empty list.
+  // RTL-script partial range: no trustworthy per-slice geometry, so the
+  // whole line boxes are returned (present but imprecise).
   const t = document.getElementById("rtl").firstChild;
   const range = document.createRange();
   range.setStart(t, 0);
   range.setEnd(t, 2);
-  assert_equals(rects(range).length, 0, "RTL partial range is empty");
-}, "RTL partial range returns no boxes");
+  const list = rects(range);
+  assert_greater_than(list.length, 0, "RTL partial range is present");
+  for (const rect of list) {
+    assert_greater_than(rect.width, 0, "non-empty width");
+    assert_greater_than(rect.height, 0, "non-empty height");
+  }
+}, "RTL partial range returns line boxes");
 </script>
 </body>
 </html>
