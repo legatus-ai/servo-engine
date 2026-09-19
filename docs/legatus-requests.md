@@ -8,7 +8,7 @@ Repro page + probe commands: see source doc (`servo-gaps.html`).
 
 | # | Request | Status | WPT before | WPT after | Commit |
 |---|---------|--------|------------|-----------|--------|
-| 1 | Range geometry: 1-char text range returns 4 rects, first ~580px wide at wrong top (want 1 glyph box, Edge: 46,14,7,16) | done | servo-gaps repro: 2 boxes incl. 780px line box | 1 box [45.8,14.2,7.0,16.1]; word/collapsed/end-caret/full-line exact; multi-node untouched (nested-text abspos case still FAIL, separate bug) | 8804f281 |
+| 1 | Range geometry: 1-char text range returns 4 rects, first ~580px wide at wrong top (want 1 glyph box, Edge: 46,14,7,16) | done | servo-gaps repro: 2 boxes incl. 780px line box | 1 box [45.8,14.2,7.0,16.1]; word/collapsed/end-caret/full-line exact; multi-node ends clip (start was missing from walk). Follow-ups: (a) WPT css/cssom-view range files still FAIL (nested-text 8/5 vs 6/4: dup element+text box + abspos empty-counting need Chrome ground truth); (b) RTL-script text keeps legacy whole boxes (LTR walk can't model visual order; no regress by construction); (c) multi-node middles keep legacy element boxes | 8804f281 + 8253e086 |
 | 2 | Caret from point: `caretPositionFromPoint` + `caretRangeFromPoint` + `Selection.modify` all undefined | todo | | | |
 | 6 | HIGH: `elementFromPoint` hits elements inside `[hidden]` (display:none) subtrees in long-lived DOM-morphed documents (fresh page OK). Breaks live pane clicks. Repro: toggle `hidden` on sibling sections + mutate children, then elementFromPoint over a visible element | todo | | | |
 | 3 | `document.execCommand` missing on Servo 0.5 (insertText/selectAll/copy) — verify vs our line (execCommand pref already on; insertText/bold probed working) | todo | | | |
