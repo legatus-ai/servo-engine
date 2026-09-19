@@ -260,46 +260,6 @@ impl WheelEventMethods<crate::DomTypeHolder> for WheelEvent {
         self.delta_mode.get()
     }
 
-    /// <https://w3c.github.io/uievents/#widl-WheelEvent-initWheelEvent>
-    fn InitWheelEvent(
-        &self,
-        type_arg: DOMString,
-        can_bubble_arg: bool,
-        cancelable_arg: bool,
-        view_arg: Option<&Window>,
-        detail_arg: i32,
-        delta_x_arg: Finite<f64>,
-        delta_y_arg: Finite<f64>,
-        delta_z_arg: Finite<f64>,
-        delta_mode_arg: u32,
-    ) {
-        if self.upcast::<Event>().dispatching() {
-            return;
-        }
-
-        self.upcast::<MouseEvent>().InitMouseEvent(
-            type_arg,
-            can_bubble_arg,
-            cancelable_arg,
-            view_arg,
-            detail_arg,
-            self.mouseevent.ScreenX(),
-            self.mouseevent.ScreenY(),
-            self.mouseevent.ClientX(),
-            self.mouseevent.ClientY(),
-            self.mouseevent.CtrlKey(),
-            self.mouseevent.AltKey(),
-            self.mouseevent.ShiftKey(),
-            self.mouseevent.MetaKey(),
-            self.mouseevent.Button(),
-            self.mouseevent.GetRelatedTarget().as_deref(),
-        );
-        self.delta_x.set(delta_x_arg);
-        self.delta_y.set(delta_y_arg);
-        self.delta_z.set(delta_z_arg);
-        self.delta_mode.set(delta_mode_arg);
-    }
-
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
     fn IsTrusted(&self) -> bool {
         self.mouseevent.IsTrusted()

@@ -22,12 +22,3 @@ dictionary WheelEventInit : MouseEventInit {
     double deltaZ = 0.0;
     unsigned long deltaMode = 0;
 };
-
-// https://w3c.github.io/uievents/#idl-interface-WheelEvent-initializers
-partial interface WheelEvent {
-    // Deprecated in DOM Level 3
-    undefined initWheelEvent (DOMString typeArg, boolean bubblesArg, boolean cancelableArg,
-                         Window? viewArg, long detailArg,
-                         double deltaX, double deltaY,
-                         double deltaZ, unsigned long deltaMode);
-};
