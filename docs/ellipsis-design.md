@@ -1,13 +1,9 @@
 # Design note: `text-overflow: ellipsis` (Legatus #7, phase 1)
 
-Status: proposed, awaiting Vitruvius review. No code yet.
-
-## Goal (phase 1)
-
-Single-line ellipsis at the logical end of an overflowing line:
-`text-overflow: ellipsis` (one value) on a block container. Two-value
-syntax (`clip ellipsis`, physical sides), `<string>` values, and
-multi-line clamping stay phase 2.
+Status: APPROVED by Vitruvius with 3 amendments (incorporated below).
+Phase 1: single-line `ellipsis` at the logical end. Phase 2: two-value
+syntax, `<string>` values, `overflow: scroll|auto` dynamics, line-clamp,
+vertical writing, form controls.
 
 ## Where truncation happens
 
@@ -37,57 +33,81 @@ and has no per-glyph shrink step; retrofitting truncation there would
 tangle breaking, justification, and float placement. A post-pass sees
 final advances and only edits trailing items.
 
-## Gate
+## Gate (amended per review — spec css-overflow-3 §6.1)
+
+> "This property specifies rendering when inline content overflows its
+> end line box edge ... of its block container element ('the block')
+> **that has overflow other than visible**."
 
 Truncate a line only when all hold on the block container style:
 
 - `text-overflow` second side (logical end) is `Ellipsis` (phase 1;
   `String(_)` and two-value physical sides are phase 2),
+- the block's `overflow-x` (inline axis) computes to something other
+  than `visible` — i.e. `hidden` or `clip` in phase 1,
 - the line's content inline size exceeds the available inline size
   (after float adjustment),
 - the line is not a phantom line.
 
-No `white-space` or `overflow` precondition beyond what the style
-already requires: `overflow: hidden|clip` clips via existing clip nodes;
-`overflow: visible|scroll` still shows the ellipsis (Chrome parity —
-ellipsis renders whenever content overflows, clipping is orthogonal).
-`white-space: nowrap` is the common case, not a gate: wrapped lines
-with unbreakable overflow get the same treatment per spec.
+`overflow-x: scroll|auto` is phase 2, not phase 1: per spec
+§"ellipsis interaction with scrolling interfaces", scrolling must
+re-reveal content and shrink the ellipsis dynamically
+(text-overflow-scroll-001), which needs scroll-offset-aware truncation
+— layout does not re-run on scroll, so a layout-baked ellipsis would
+go stale. `overflow: visible` gets no ellipsis at all (Chrome/Firefox
+parity — the earlier draft of this note was wrong here).
 
-## Truncation algorithm (visual order, from the visual end)
+## Truncation algorithm (visual order, from the visual end) —
+amended: grapheme clusters, block-styled ellipsis
 
 Line items hold shaped glyphs (`TextRunLineItem.text:
 Vec<Arc<ShapedTextSlice>>` with `total_advance()`), so truncation is
 glyph arithmetic, mirroring the existing `trim_whitespace_at_end`
-pattern in `line.rs`:
+pattern in `line.rs`. Per spec, "character" means grapheme cluster
+(UAX29): never split combining-mark sequences, emoji ZWJ sequences,
+regional-indicator pairs, or ligature clusters.
 
-1. Shape the ellipsis run once per distinct font (`Font::shape_text`
-   on "\u{2026}" with the truncated run's `FontAndScriptInfo`), measure
-   its advance E.
+1. Shape the ellipsis run once per distinct font: U+2026 with the
+   **block container's used font** (spec: "The ellipsis is styled and
+   baseline-aligned according to the block"), measure its advance E.
+   If the block font lacks the glyph, fall back to "..." (three
+   U+002E) in the same font.
 2. Walk trailing line items from the visual end, dropping whole items
-   (atomic inlines, trailing padding/border/margin markers stay — only
-   content items go) and then trailing shaped slices inside the last
-   text item until the freed space fits E. If even the first item plus
-   E overflows, the line shows only the ellipsis.
-3. Shorten the last surviving text item in place (drain trailing
-   slices) and append the ellipsis slices as a new trailing
-   `LineItem::TextRun` (or extend the same item) with an **empty**
+   (atomic inlines; trailing padding/border/margin markers stay — only
+   content items go), then truncating inside the last text item at a
+   **grapheme-cluster boundary** (use the glyph→character cluster
+   mapping from shaping; a slice can span a whole word, so dropping
+   whole slices would leave a visible gap). Drain whole clusters from
+   the visual end until the freed space fits E.
+3. If even the first character plus E overflows, **clip, don't
+   ellipsis** (spec: "The first character or atomic inline-level
+   element on a line must be clipped rather than ellipsed"; likewise
+   clip the ellipsis itself when space is insufficient).
+4. Shorten the last surviving text item in place (drain trailing
+   clusters) and append the ellipsis slices as a new trailing
+   `LineItem::TextRun` with an **empty**
    `character_range_in_dom_node`, so no DOM text claims the ellipsis.
+   Baseline-align per the block's metrics (the ellipsis fragment uses
+   the block font metrics for its line-box contribution).
 
 Inline boxes (spans): truncation crosses box boundaries freely — boxes
-contribute no width themselves, only their text children do; the
-ellipsis inherits the style/font of the truncated run it replaces.
-Inline-blocks and other atomics at the visual end are dropped whole
-(they cannot be partially shown); floats/abspos placeholders are
-skipped, never truncated.
+contribute no width themselves, only their text children do. The
+ellipsis does NOT inherit the truncated inline's style (spec:
+block-styled). Inline-blocks and other atomics at the visual end are
+dropped whole (they cannot be partially shown); floats/abspos
+placeholders are skipped, never truncated. Truncation is computed in
+layout space; relative positioning and transforms apply uniformly at
+paint as usual.
 
 ## Ellipsis glyph sourcing
 
-- U+2026 shaped with the truncated run's font (`FontAndScriptInfo`).
-- If the font lacks the glyph (shaper returns .notdef — detect via the
-  shaped glyph id mapping to the missing-glyph sentinel, same check the
-  text path uses for tofu avoidance), fall back to shaping "..."
-  (three U+002E) with the same font.
+- U+2026 shaped with the **block container's used font** (spec §6.1:
+  "styled and baseline-aligned according to the block"), first font in
+  its font list that has the glyph.
+- If the block font lacks the glyph, shape "..." (three U+002E) in the
+  same font (spec: "or three dots "..." if the ellipsis character is
+  unavailable"; other scripts/writing modes may substitute a more
+  appropriate ellipsis — out of phase 1).
 - `<string>` values (`TextOverflowSide::String`) are phase 2.
 - `direction: rtl` needs no extra work: truncation walks the visual
   order, and RTL lines are visually mirrored by the existing reorder,
@@ -116,14 +136,15 @@ path and clipped by the existing overflow clip nodes. `display_list`
 and hit-test traversal need no changes beyond what shortened fragments
 already imply.
 
-## white-space / overflow interaction matrix (phase 1)
+## white-space / overflow interaction matrix (phase 1, amended)
 
-| white-space | overflow | behavior |
+| white-space | overflow-x | behavior |
 |---|---|---|
 | nowrap | hidden/clip | truncate + ellipsis at boundary |
-| nowrap | visible/scroll | truncate + ellipsis, overflowing visibly (Chrome parity) |
-| normal/pre-wrap | any | only lines that actually overflow (unbreakable runs); wrapped lines break instead |
-| pre | hidden | same as nowrap |
+| nowrap | visible | NO ellipsis, text overflows visibly (spec: block must have overflow other than visible) |
+| nowrap | scroll/auto | phase 2 (dynamic re-reveal while scrolling) |
+| normal/pre-wrap | hidden/clip | only lines that actually overflow (unbreakable runs); wrapped lines break instead |
+| pre | hidden/clip | same as nowrap |
 
 ## WPT plan (css/css-overflow/text-overflow-*)
 
@@ -149,6 +170,7 @@ Upstream reftests to run after (before/after counts in the row):
 ## Phase 2 (explicitly out)
 
 Two-value syntax (physical left/right sides), `<string>` values,
+`overflow-x: scroll|auto` dynamics (re-reveal while scrolling),
 `line-clamp` multi-line ellipsis, vertical writing modes, form-control
 internals, `text-overflow` on flex/grid containers beyond block
 containers.
