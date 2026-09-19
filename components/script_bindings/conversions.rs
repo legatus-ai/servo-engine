@@ -585,34 +585,39 @@ impl<D: crate::DomTypes> EventModifierInit<D> {
         if self.metaKey {
             modifiers.insert(Modifiers::META);
         }
-        if self.keyModifierStateAltGraph {
+        if self.keyModifierStateAltGraph || self.modifierAltGraph {
             modifiers.insert(Modifiers::ALT_GRAPH);
         }
-        if self.keyModifierStateCapsLock {
+        if self.keyModifierStateCapsLock || self.modifierCapsLock {
             modifiers.insert(Modifiers::CAPS_LOCK);
         }
-        if self.keyModifierStateFn {
+        if self.keyModifierStateFn || self.modifierFn {
             modifiers.insert(Modifiers::FN);
         }
-        if self.keyModifierStateFnLock {
+        if self.keyModifierStateFnLock || self.modifierFnLock {
             modifiers.insert(Modifiers::FN_LOCK);
         }
-        if self.keyModifierStateHyper {
+        if self.keyModifierStateHyper || self.modifierHyper {
             modifiers.insert(Modifiers::HYPER);
         }
-        if self.keyModifierStateNumLock {
+        if self.keyModifierStateNumLock || self.modifierNumLock {
             modifiers.insert(Modifiers::NUM_LOCK);
         }
-        if self.keyModifierStateScrollLock {
+        // No OS flag exists in keyboard_types; the OS key is the platform's
+        // meta key, so it is folded into META.
+        if self.keyModifierStateOS || self.modifierOS {
+            modifiers.insert(Modifiers::META);
+        }
+        if self.keyModifierStateScrollLock || self.modifierScrollLock {
             modifiers.insert(Modifiers::SCROLL_LOCK);
         }
-        if self.keyModifierStateSuper {
+        if self.keyModifierStateSuper || self.modifierSuper {
             modifiers.insert(Modifiers::SUPER);
         }
-        if self.keyModifierStateSymbol {
+        if self.keyModifierStateSymbol || self.modifierSymbol {
             modifiers.insert(Modifiers::SYMBOL);
         }
-        if self.keyModifierStateSymbolLock {
+        if self.keyModifierStateSymbolLock || self.modifierSymbolLock {
             modifiers.insert(Modifiers::SYMBOL_LOCK);
         }
         modifiers

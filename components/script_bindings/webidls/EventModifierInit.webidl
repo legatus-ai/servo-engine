@@ -8,6 +8,18 @@ dictionary EventModifierInit : UIEventInit {
     boolean shiftKey = false;
     boolean altKey = false;
     boolean metaKey = false;
+    boolean modifierAltGraph = false;
+    boolean modifierCapsLock = false;
+    boolean modifierFn = false;
+    boolean modifierFnLock = false;
+    boolean modifierHyper = false;
+    boolean modifierNumLock = false;
+    boolean modifierOS = false;
+    boolean modifierScrollLock = false;
+    boolean modifierSuper = false;
+    boolean modifierSymbol = false;
+    boolean modifierSymbolLock = false;
+    // Legacy aliases for the modifier* members above.
     boolean keyModifierStateAltGraph = false;
     boolean keyModifierStateCapsLock = false;
     boolean keyModifierStateFn = false;

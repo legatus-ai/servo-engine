@@ -183,6 +183,7 @@ impl KeyboardEvent {
 
 impl KeyboardEventMethods<crate::DomTypeHolder> for KeyboardEvent {
     /// <https://w3c.github.io/uievents/#dom-keyboardevent-keyboardevent>
+    #[allow(deprecated)]
     fn Constructor(
         cx: &mut JSContext,
         window: &Window,
@@ -195,6 +196,49 @@ impl KeyboardEventMethods<crate::DomTypeHolder> for KeyboardEvent {
         modifiers.set(Modifiers::ALT, init.parent.altKey);
         modifiers.set(Modifiers::SHIFT, init.parent.shiftKey);
         modifiers.set(Modifiers::META, init.parent.metaKey);
+        // Modifier-key init members, current names plus legacy aliases.
+        let parent = &init.parent;
+        modifiers.set(
+            Modifiers::ALT_GRAPH,
+            parent.modifierAltGraph || parent.keyModifierStateAltGraph,
+        );
+        modifiers.set(
+            Modifiers::CAPS_LOCK,
+            parent.modifierCapsLock || parent.keyModifierStateCapsLock,
+        );
+        modifiers.set(Modifiers::FN, parent.modifierFn || parent.keyModifierStateFn);
+        modifiers.set(
+            Modifiers::FN_LOCK,
+            parent.modifierFnLock || parent.keyModifierStateFnLock,
+        );
+        modifiers.set(
+            Modifiers::HYPER,
+            parent.modifierHyper || parent.keyModifierStateHyper,
+        );
+        modifiers.set(
+            Modifiers::NUM_LOCK,
+            parent.modifierNumLock || parent.keyModifierStateNumLock,
+        );
+        modifiers.set(
+            Modifiers::META,
+            modifiers.contains(Modifiers::META) || parent.modifierOS || parent.keyModifierStateOS,
+        );
+        modifiers.set(
+            Modifiers::SCROLL_LOCK,
+            parent.modifierScrollLock || parent.keyModifierStateScrollLock,
+        );
+        modifiers.set(
+            Modifiers::SUPER,
+            parent.modifierSuper || parent.keyModifierStateSuper,
+        );
+        modifiers.set(
+            Modifiers::SYMBOL,
+            parent.modifierSymbol || parent.keyModifierStateSymbol,
+        );
+        modifiers.set(
+            Modifiers::SYMBOL_LOCK,
+            parent.modifierSymbolLock || parent.keyModifierStateSymbolLock,
+        );
         let event = KeyboardEvent::new_with_proto(
             cx,
             window,
