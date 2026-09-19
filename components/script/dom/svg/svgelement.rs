@@ -116,8 +116,12 @@ impl VirtualMethods for SVGElement {
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
-        matches!(
-            attr.local_name(),
+        // "text-overflow" has no interned atom, so it is compared by value.
+        // Keep in sync with the presentation attributes mapped in
+        // `synthesize_presentational_hints` below.
+        attr.local_name().to_string() == "text-overflow" ||
+            matches!(
+                attr.local_name(),
             &local_name!("fill") |
                 &local_name!("fill-opacity") |
                 &local_name!("fill-rule") |
@@ -359,6 +363,12 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
             &parser_context,
             "stroke-opacity",
             longhands::stroke_opacity::parse_declared,
+            push,
+        );
+        self.parse_svg_attribute(
+            &parser_context,
+            "text-overflow",
+            longhands::text_overflow::parse_declared,
             push,
         );
         self.parse_svg_attribute(

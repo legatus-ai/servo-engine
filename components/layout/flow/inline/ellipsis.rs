@@ -237,13 +237,20 @@ fn truncate_text_glyphs(
             continue;
         }
         // Straddling slice: keep a cluster-clean prefix/suffix of it.
+        // `keep_*` counts from the cut side; translate to a leading split
+        // point (trailing keeps start at `total - keep`).
+        let total = slice.glyph_count();
         let keep_count = if from_end {
             keep_leading_glyphs_for_advance(slice, sat_sub(keep_target, kept_advance))
         } else {
             keep_trailing_glyphs_for_advance(slice, sat_sub(keep_target, kept_advance))
         };
-        let total = slice.glyph_count();
-        let (leading, trailing) = slice.split_at_glyph(keep_count.min(total));
+        let split_at = if from_end {
+            keep_count.min(total)
+        } else {
+            total.saturating_sub(keep_count)
+        };
+        let (leading, trailing) = slice.split_at_glyph(split_at);
         let kept_part = if from_end { leading } else { trailing };
         kept_advance += kept_part.total_advance();
         if from_end {
