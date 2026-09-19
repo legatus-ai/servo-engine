@@ -10,7 +10,7 @@ use dom_struct::dom_struct;
 use icu_segmenter::WordSegmenter;
 use icu_segmenter::options::WordBreakInvariantOptions;
 use js::context::{JSContext, NoGC};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::dom::UnrootedDom;
@@ -42,6 +42,16 @@ use crate::dom::staticrange::StaticRange;
 use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
 use crate::dom::types::ShadowRoot;
 use crate::dom::{CharacterData, FlatTreeParent, NodeDamage, NodeFlags, StartOrEnd};
+
+/// Used value of [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select):
+/// like the computed value but excludes `auto`.
+#[derive(Copy, Clone, PartialEq)]
+pub(crate) enum UsedUserSelect {
+    Text,
+    None,
+    Contain,
+    All,
+}
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
 pub(crate) enum Direction {
@@ -476,7 +486,7 @@ impl Selection {
         self.visible_selection_dirty.set(true);
     }
 
-    fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
+    pub(crate) fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
         let range = self.range.borrow();
         let range = range.as_ref()?;
         Some(match self.direction.get() {
@@ -1862,7 +1872,7 @@ fn position_in_flat_tree_for_selection(
 impl Node {
     /// Get the `Utf16CodeUnits` offset for the given offset if `self` is a
     /// `CharacterData` or else return the offset in the child list.
-    fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
+    pub(crate) fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
         if let Some(character_data) = self.downcast::<CharacterData>() {
             // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
             offset
@@ -2092,6 +2102,8 @@ struct VisibleSelectionFlagUpdate<'no_gc> {
     /// Hash keys are pointer addresses which are not directly controlled by web content
     /// so we don’t need HashDoS resistance and can use a faster hasher than `std`’s default
     previously_flagged_nodes: FxHashSet<UnrootedDom<'no_gc, Node>>,
+    /// Cache shared between calls to [`Node::used_user_select`]
+    used_user_select_cache: FxHashMap<UnrootedDom<'no_gc, Node>, UsedUserSelect>,
     /// Whether or not this update requires a display list update.
     needs_new_display_list: bool,
 }
@@ -2106,6 +2118,7 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
         let mut update = Self {
             no_gc,
             previously_flagged_nodes,
+            used_user_select_cache: Default::default(),
             needs_new_display_list: false,
         };
 
@@ -2134,19 +2147,21 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             self.previously_flagged_nodes.remove(node);
         }
 
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(
-                character_data,
-                Some(flat_tree_selection.range_for_character_data(character_data)),
-            );
-        }
+        // TODO: We should ensure that the style is up-to-date before reading the
+        // `user-select` property and changes to `user-select` should trigger new visual
+        // selection updates. Not doing this means that the calculations here are one
+        // layout old and are never run again until the selection changes.
+        let user_select = node.used_user_select(self.no_gc, &mut self.used_user_select_cache);
+        let inhibited = user_select == UsedUserSelect::None;
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, inhibited);
+
+        self.set_node_selection(node, (!inhibited).then_some(flat_tree_selection));
     }
 
     fn clear(&mut self, node: &Node) {
         node.set_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION, false);
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(character_data, None)
-        }
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, false);
+        self.set_node_selection(node, None);
     }
 
     fn set_character_data_selection(
@@ -2164,6 +2179,17 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             character_data
                 .upcast::<Node>()
                 .dirty(self.no_gc, NodeDamage::ContentOrHeritage);
+        }
+    }
+
+    fn set_node_selection(&mut self, node: &Node, flat_tree_selection: Option<&FlatTreeSelection>) {
+        if let Some(character_data) = node.downcast::<CharacterData>() {
+            let range = flat_tree_selection.map(|flat_tree_selection| {
+                flat_tree_selection.range_for_character_data(character_data)
+            });
+            self.set_character_data_selection(character_data, range);
+        } else if node.set_element_selection(flat_tree_selection.is_some()) {
+            self.needs_new_display_list = true;
         }
     }
 
