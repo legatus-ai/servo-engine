@@ -1,0 +1,19 @@
+[package]
+name = "legatus-check"
+version.workspace = true
+authors.workspace = true
+description = "Legatus standalone build gate: links the engine crates our patches touch, under the workspace stylo patch."
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "legatus-check"
+path = "main.rs"
+
+[dependencies]
+fonts = { workspace = true }
+layout = { workspace = true }
+script = { workspace = true }
+
+[lints]
+workspace = true
