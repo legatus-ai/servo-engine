@@ -6678,18 +6678,14 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// <https://drafts.csswg.org/cssom-view/#dom-document-caretpositionfrompoint>
     fn CaretPositionFromPoint(
         &self,
+        cx: &mut JSContext,
         x: Finite<f64>,
         y: Finite<f64>,
         _options: &CaretPositionFromPointOptions,
     ) -> Option<DomRoot<CaretPosition>> {
-        // The binding passes no JSContext; recover it from the script thread
-        // to reflect the result object.
-        #[expect(unsafe_code)]
-        let mut cx = unsafe { JSContext::get_from_thread() }
-            .expect("caretPositionFromPoint runs on the script thread");
         let (node, offset) = self.caret_node_and_offset_at_point(x, y)?;
         Some(CaretPosition::new(
-            &mut cx,
+            cx,
             &self.global(),
             None,
             &node,
@@ -6698,16 +6694,12 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     }
 
     /// Legacy WebKit extension, still supported by Chromium.
-    fn CaretRangeFromPoint(&self, x: Finite<f32>, y: Finite<f32>) -> Option<DomRoot<Range>> {
-        // Same thread-local context recovery as above.
-        #[expect(unsafe_code)]
-        let mut cx = unsafe { JSContext::get_from_thread() }
-            .expect("caretRangeFromPoint runs on the script thread");
+    fn CaretRangeFromPoint(&self, cx: &mut JSContext, x: Finite<f32>, y: Finite<f32>) -> Option<DomRoot<Range>> {
         let (node, offset) = self.caret_node_and_offset_at_point(
             Finite::wrap(*x as f64),
             Finite::wrap(*y as f64),
         )?;
-        Some(Range::new(&mut cx, self, &node, offset, &node, offset))
+        Some(Range::new(cx, self, &node, offset, &node, offset))
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement>
@@ -7363,14 +7355,31 @@ impl Document {
         }
         let root = self.GetDocumentElement()?;
         let point = Point2D::new(Au::from_f32_px(x), Au::from_f32_px(y));
-        let (node, offset) = window.text_index_query_on_node_for_event(root.upcast(), point)?;
-        // The layout query yields UTF-32 offsets into transformed text;
-        // the DOM API speaks UTF-16 offsets into the node text.
-        let text = node
-            .downcast::<CharacterData>()?
-            .data()
-            .to_string();
-        let offset = Utf32CodeUnits(offset.0).to_utf16_code_units_in(AssumeUnder4GB, &text);
-        Some((node, offset.0))
+        if let Some((node, offset)) =
+            window.text_index_query_on_node_for_event(root.upcast(), point)
+        {
+            // The layout query yields UTF-32 offsets into transformed text;
+            // the DOM API speaks UTF-16 offsets into the node text.
+            let text = node.downcast::<CharacterData>()?.data().to_string();
+            let offset = Utf32CodeUnits(offset.0).to_utf16_code_units_in(AssumeUnder4GB, &text);
+            return Some((node, offset.0));
+        }
+        // No text under the point (padding of an element, an <img>, an
+        // empty block): report the hit element itself at offset 0 when it
+        // has no children. Offsets into padding of elements *with*
+        // children need per-child geometry and stay unimplemented.
+        let hit = self.document_or_shadow_root.element_from_point(
+            self.upcast(),
+            Finite::wrap(x as f64),
+            Finite::wrap(y as f64),
+            Some(root),
+            self.has_browsing_context,
+        )?;
+        let upcast: &Node = hit.upcast();
+        if upcast.children_count() == 0 {
+            Some((DomRoot::from_ref(upcast), 0))
+        } else {
+            None
+        }
     }
 }

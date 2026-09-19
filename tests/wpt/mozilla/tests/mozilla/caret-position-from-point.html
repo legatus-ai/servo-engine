@@ -8,6 +8,9 @@
 </head>
 <body style="font:14px sans-serif;margin:0">
 <p id="p" style="margin:10px">Hello selection world.</p>
+<p id="ws" style="margin:10px">
+    hello world</p>
+<p id="upper" style="margin:10px;text-transform:uppercase">ßabc</p>
 <script>
 "use strict";
 
@@ -52,6 +55,59 @@ test(() => {
     document.caretRangeFromPoint(-1, -1), null,
     "negative point returns null");
 }, "caretRangeFromPoint returns a collapsed range");
+
+test(() => {
+  // Leading collapsed whitespace: the DOM offset counts the raw text.
+  const ws = document.getElementById("ws").firstChild;
+  const probeRect = document.createRange();
+  probeRect.setStart(ws, 5);
+  probeRect.setEnd(ws, 6);
+  const box = probeRect.getClientRects()[0];
+  const pos = document.caretPositionFromPoint(box.left + 1, box.top + box.height / 2);
+  assert_not_equals(pos, null, "caret position found");
+  assert_equals(pos.offsetNode, ws, "offset node is the text");
+  assert_equals(pos.offset, 5, "offset is past the collapsed whitespace");
+}, "caretPositionFromPoint maps through collapsed whitespace");
+
+test(() => {
+  // text-transform:uppercase turns ß (one DOM char) into SS (two rendered
+  // chars); the DOM offset still indexes the raw text.
+  const up = document.getElementById("upper").firstChild;
+  const probeRect = document.createRange();
+  probeRect.setStart(up, 1);
+  probeRect.setEnd(up, 2);
+  const box = probeRect.getClientRects()[0];
+  const pos = document.caretPositionFromPoint(box.left + 1, box.top + box.height / 2);
+  assert_not_equals(pos, null, "caret position found");
+  assert_equals(pos.offsetNode, up, "offset node is the text");
+  assert_equals(pos.offset, 1, "offset indexes the raw text");
+}, "caretPositionFromPoint maps through text-transform");
+
+test(() => {
+  // Hits with no text underneath report the hit element at offset 0
+  // when it has no children.
+  const box = document.createElement("div");
+  box.style.cssText = "width:100px;height:50px";
+  document.body.appendChild(box);
+  const rect = box.getBoundingClientRect();
+  const pos = document.caretPositionFromPoint(rect.left + 10, rect.top + 10);
+  assert_not_equals(pos, null, "caret position found");
+  assert_equals(pos.offsetNode, box, "offset node is the empty div");
+  assert_equals(pos.offset, 0, "offset is 0");
+  box.remove();
+}, "caretPositionFromPoint on an empty div");
+
+test(() => {
+  const img = document.createElement("img");
+  img.style.cssText = "width:50px;height:50px";
+  document.body.appendChild(img);
+  const rect = img.getBoundingClientRect();
+  const pos = document.caretPositionFromPoint(rect.left + 10, rect.top + 10);
+  assert_not_equals(pos, null, "caret position found");
+  assert_equals(pos.offsetNode, img, "offset node is the img");
+  assert_equals(pos.offset, 0, "offset is 0");
+  img.remove();
+}, "caretPositionFromPoint on an img");
 </script>
 </body>
 </html>
