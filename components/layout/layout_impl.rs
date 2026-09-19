@@ -92,7 +92,7 @@ use crate::query::{
     process_current_css_zoom_query, process_effective_overflow_query,
     process_node_scroll_area_request, process_offset_parent_query, process_padding_request,
     process_resolved_font_style_query, process_resolved_style_request,
-    process_scroll_container_query,
+    process_scroll_container_query, process_text_rects_request,
 };
 use crate::traversal::{RecalcStyle, compute_damage_and_rebuild_box_tree};
 use crate::{BoxTree, FragmentTree};
@@ -582,6 +582,30 @@ impl Layout for LayoutThread {
                 point_in_viewport,
             )
         })
+    }
+
+    #[servo_tracing::instrument(skip_all)]
+    fn query_text_rects(
+        &self,
+        node: TrustedNodeAddress,
+        start_offset: Utf32CodeUnits,
+        end_offset: Utf32CodeUnits,
+    ) -> CSSPixelRectVec {
+        with_layout_state(|| {
+            let node = unsafe { ServoLayoutNode::new(&node) };
+            let stacking_context_tree = self.stacking_context_tree.borrow();
+            let stacking_context_tree = stacking_context_tree.as_ref()?;
+            let fragment_tree = self.fragment_tree.borrow();
+            let fragment_tree = fragment_tree.as_ref()?;
+            Some(process_text_rects_request(
+                stacking_context_tree,
+                &fragment_tree,
+                node.opaque(),
+                start_offset,
+                end_offset,
+            ))
+        })
+        .unwrap_or_default()
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -1973,7 +1997,8 @@ impl ReflowPhases {
                 QueryMsg::FlushForUpdateTheRenderingQuery |
                 QueryMsg::OffsetParentQuery |
                 QueryMsg::ScrollingAreaOrOffsetQuery |
-                QueryMsg::TextIndexQuery => Self::StackingContextTreeConstruction,
+                QueryMsg::TextIndexQuery |
+                QueryMsg::TextRectsQuery => Self::StackingContextTreeConstruction,
                 QueryMsg::ClientRectQuery |
                 QueryMsg::CurrentCSSZoomQuery |
                 QueryMsg::EffectiveOverflow |

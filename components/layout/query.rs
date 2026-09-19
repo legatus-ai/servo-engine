@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use app_units::Au;
+use style::Zero as _;
 use bitflags::bitflags;
 use embedder_traits::UntrustedNodeAddress;
 use euclid::{Point2D, Rect, Size2D};
@@ -21,7 +22,7 @@ use layout_api::{
 use paint_api::display_list::ScrollTree;
 use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
-use servo_base::text::Utf32CodeUnits;
+use servo_base::text::{RangeAny, Utf32CodeUnits};
 use servo_geometry::{FastLayoutTransform, au_rect_to_f32_rect, f32_rect_to_au_rect};
 use servo_url::ServoUrl;
 use style::computed_values::display::T as Display;
@@ -167,6 +168,215 @@ pub fn process_client_rect_request(node: ServoLayoutNode<'_>) -> Rect<i32, CSSPi
         .first()
         .map(Fragment::client_rect)
         .unwrap_or_default()
+}
+
+/// Bounding boxes of a DOM character range within a single text node, one per
+/// line fragment, clipped to the range via glyph advances. Used for
+/// `Range.getClientRects()` on partially selected text. Offsets are UTF-32
+/// code units into the node's text. Only LTR horizontal text is handled
+/// precisely (same limitation as selection painting).
+pub(crate) fn process_text_rects_request(
+    stacking_context_tree: &StackingContextTree,
+    fragment_tree: &FragmentTree,
+    target: OpaqueNode,
+    start_offset: Utf32CodeUnits,
+    end_offset: Utf32CodeUnits,
+) -> CSSPixelRectVec {
+    // Transform from the root fragments, which always include boxes with
+    // spatial-tree nodes (text fragments carry none).
+    let transform = root_transform_for_fragments(
+        &stacking_context_tree.paint_info.scroll_tree,
+        &fragment_tree.root_fragments,
+    );
+
+    struct Walker {
+        target: OpaqueNode,
+        start_offset: Utf32CodeUnits,
+        end_offset: Utf32CodeUnits,
+        rects: Vec<Rect<Au, CSSPixel>>,
+        /// Set once a strictly-containing fragment emitted a caret, so a
+        /// shared fragment boundary does not emit a second one. A boundary
+        /// fallback recorded below is only used when no strict match exists.
+        caret_done: bool,
+        caret_fallback: Option<(Point2D<Au, CSSPixel>, Au, Au)>,
+    }
+    fn walk(fragment: &Fragment, origin: Point2D<Au, CSSPixel>, walker: &mut Walker) {
+        if let Fragment::Text(text) = fragment {
+            let matches = text
+                .base
+                .tag
+                .as_ref()
+                .is_some_and(|tag| tag.node == walker.target && tag.pseudo_element_chain.is_empty());
+            if matches {
+                collect_text_rect(text, origin, walker);
+            }
+        }
+        if let Some(children) = fragment.children() {
+            for child in children.iter() {
+                let offset = child
+                    .base()
+                    .map(|base| base.rect().origin)
+                    .unwrap_or_default();
+                walk(child, origin + offset.to_vector(), walker);
+            }
+        }
+    }
+    // Walk glyphs accumulating advances, mirroring selection painting, and
+    // emit the slice of this fragment covered by the requested range.
+    fn collect_text_rect(
+        fragment: &crate::fragment_tree::TextFragment,
+        origin: Point2D<Au, CSSPixel>,
+        walker: &mut Walker,
+    ) {
+        // Map the DOM range into this run's transformed text.
+        let selected = fragment.run_data.map_dom_range_to_transformed_range(RangeAny::new(
+            Some(walker.start_offset),
+            Some(walker.end_offset),
+        ));
+        let frag_range = &fragment.character_range_in_dom_node;
+
+        // Caret (empty range): advance of the glyph containing the offset.
+        // A strictly containing fragment (start <= x < end) emits immediately;
+        // boundary fragments only record a fallback used when nothing strictly
+        // contains x (shared boundary would otherwise emit duplicates, and
+        // end-of-text needs the last fragment's end).
+        if walker.start_offset == walker.end_offset {
+            if frag_range.start > walker.start_offset {
+                return;
+            }
+            let strict =
+                frag_range.start <= walker.start_offset && walker.start_offset < frag_range.end;
+            if !strict && (walker.caret_done || frag_range.end < walker.start_offset) {
+                return;
+            }
+            let mut index = frag_range.start;
+            let mut advance = Au::zero();
+            let mut caret = None;
+            'outer: for glyph_store in fragment.glyphs.iter() {
+                for glyph in glyph_store.glyphs() {
+                    if index + glyph.character_count() > walker.start_offset {
+                        caret = Some(advance);
+                        break 'outer;
+                    }
+                    index += glyph.character_count();
+                    advance += glyph.advance();
+                    if glyph.char_is_word_separator() {
+                        advance += fragment.justification_adjustment;
+                    }
+                }
+            }
+            let caret = caret.unwrap_or(advance);
+            let height = fragment.base.rect().size.height;
+            let rect = Rect::new(
+                Point2D::new(origin.x + caret, origin.y),
+                Size2D::new(Au::zero(), height),
+            );
+            if strict {
+                walker.caret_done = true;
+                // A later strict match cannot happen, but drop any stale
+                // boundary fallback so only one caret is ever emitted.
+                walker.caret_fallback = None;
+                walker.rects.push(rect);
+            } else {
+                walker.caret_fallback = Some((origin, caret, height));
+            }
+            return;
+        }
+
+        if frag_range.end <= selected.start || frag_range.start >= selected.end {
+            return;
+        }
+        let mut index = frag_range.start;
+        let mut advance = Au::zero();
+        let mut start_advance = None;
+        let mut end_advance = None;
+        for glyph_store in fragment.glyphs.iter() {
+            let count = glyph_store.character_count();
+            if index + count < selected.start {
+                advance += glyph_store.total_advance() +
+                    (fragment.justification_adjustment * glyph_store.total_word_separators() as i32);
+                index += count;
+                continue;
+            }
+            if index >= selected.end {
+                break;
+            }
+            for glyph in glyph_store.glyphs() {
+                if index >= selected.start {
+                    start_advance = start_advance.or(Some(advance));
+                }
+                index += glyph.character_count();
+                advance += glyph.advance();
+                if glyph.char_is_word_separator() {
+                    advance += fragment.justification_adjustment;
+                }
+                if index <= selected.end {
+                    end_advance = Some(advance);
+                }
+            }
+        }
+        let (Some(start_advance), Some(end_advance)) = (start_advance, end_advance) else {
+            return;
+        };
+        let height = fragment.base.rect().size.height;
+        walker.rects.push(Rect::new(
+            Point2D::new(origin.x + start_advance, origin.y),
+            Size2D::new(end_advance - start_advance, height),
+        ));
+    }
+
+    let mut walker = Walker {
+        target,
+        start_offset,
+        end_offset,
+        rects: Vec::new(),
+        caret_done: false,
+        caret_fallback: None,
+    };
+    for root in &fragment_tree.root_fragments {
+        let origin = root
+            .base()
+            .map(|base| base.rect().origin)
+            .unwrap_or_default();
+        walk(
+            root,
+            Point2D::new(origin.x, origin.y),
+            &mut walker,
+        );
+    }
+    // End-of-text caret: no fragment strictly contained the offset.
+    if !walker.caret_done {
+        if let Some((origin, caret, height)) = walker.caret_fallback {
+            walker.rects.push(Rect::new(
+                Point2D::new(origin.x + caret, origin.y),
+                Size2D::new(Au::zero(), height),
+            ));
+        }
+    }
+
+    // Merge consecutive rects on the same line, per cssom-view (one rect
+    // per line box, not per fragment).
+    let mut merged: Vec<Rect<Au, CSSPixel>> = Vec::with_capacity(walker.rects.len());
+    for rect in walker.rects {
+        if let Some(last) = merged.last_mut() {
+            if last.origin.y == rect.origin.y && last.size.height == rect.size.height {
+                *last = last.union(&rect);
+                continue;
+            }
+        }
+        merged.push(rect);
+    }
+
+    // Without a resolvable transform the accumulated layout-space rects
+    // are already in viewport coordinates on plain pages; keep them rather
+    // than collapsing to zero size.
+    let Some(transform) = transform else {
+        return merged;
+    };
+    merged
+        .into_iter()
+        .filter_map(|rect| transform_au_rectangle(rect, transform))
+        .collect()
 }
 
 /// Process a query for the current CSS zoom of an element.

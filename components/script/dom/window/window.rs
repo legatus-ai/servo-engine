@@ -3221,6 +3221,23 @@ impl Window {
         Some((node, result.1))
     }
 
+    /// Bounding boxes of a UTF-32 character range within a text node, one
+    /// per line fragment. Used for `Range.getClientRects()` on partially
+    /// selected text.
+    pub(crate) fn text_rects_query(
+        &self,
+        node: &Node,
+        start_offset: Utf32CodeUnits,
+        end_offset: Utf32CodeUnits,
+    ) -> Vec<Rect<Au, CSSPixel>> {
+        self.layout_reflow(QueryMsg::TextRectsQuery);
+        self.layout.borrow().query_text_rects(
+            node.to_trusted_node_address(),
+            start_offset,
+            end_offset,
+        )
+    }
+
     pub(crate) fn elements_from_point_query(
         &self,
         flags: HitTestFlags,

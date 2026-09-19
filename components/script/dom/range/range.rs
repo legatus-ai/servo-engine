@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use app_units::Au;
 use dom_struct::dom_struct;
+use servo_base::text::Utf16CodeUnits;
 use euclid::Rect;
 use js::context::{JSContext, NoGC};
 use js::jsapi::JSTracer;
@@ -370,14 +371,31 @@ impl Range {
 
     /// <https://drafts.csswg.org/cssom-view/#dom-range-getclientrects>
     fn client_rects(&self, no_gc: &NoGC) -> Vec<Rect<Au, CSSPixel>> {
-        // FIXME: For text nodes that are only partially selected, this should return the client
-        // rect of the selected part, not the whole text node.
         let start = self.start_container();
         let end = self.end_container();
         // > The getClientRects() method, when invoked, must return an empty DOMRectList
         // > object if the range is not in the document.
         if !start.is_connected() || !end.is_connected() {
             return vec![];
+        }
+
+        // Fast path: both boundary points in the same text node. Ask layout
+        // for the glyph-clipped boxes of exactly the selected slice (or the
+        // caret position when collapsed) instead of whole-node boxes.
+        if std::ptr::eq(&*start, &*end) {
+            if let Some(data) = start.downcast::<CharacterData>() {
+                let text = data.data();
+                let to_utf32 =
+                    |offset: u32| Utf16CodeUnits(offset).to_utf32_code_units_in(&text);
+                let rects = start.owner_window().text_rects_query(
+                    &start,
+                    to_utf32(self.start_offset()),
+                    to_utf32(self.end_offset()),
+                );
+                if !rects.is_empty() {
+                    return rects;
+                }
+            }
         }
 
         // Per the spec, only Text nodes contribute rects when the range is collapsed

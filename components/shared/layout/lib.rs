@@ -396,6 +396,15 @@ pub trait Layout {
         node: TrustedNodeAddress,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(OpaqueNode, Utf32CodeUnits)>;
+    /// Bounding boxes of the given DOM character range within a single text
+    /// node, one per line fragment, clipped to the range via glyph advances.
+    /// Offsets are UTF-32 code units into the node's text.
+    fn query_text_rects(
+        &self,
+        node: TrustedNodeAddress,
+        start_offset: Utf32CodeUnits,
+        end_offset: Utf32CodeUnits,
+    ) -> CSSPixelRectVec;
     fn hit_test(&self, flags: HitTestFlags, point: LayoutPoint) -> HitTestResult;
     fn query_effective_overflow(&self, node: TrustedNodeAddress) -> Option<AxesOverflow>;
     fn stylist_mut(&mut self) -> &mut Stylist;
@@ -549,6 +558,7 @@ pub enum QueryMsg {
     ScrollingAreaOrOffsetQuery,
     StyleQuery,
     TextIndexQuery,
+    TextRectsQuery,
     PaddingQuery,
     FlushForUpdateTheRenderingQuery,
 }
