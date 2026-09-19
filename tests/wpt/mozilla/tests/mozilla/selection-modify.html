@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Selection.modify() character and word (Legatus #2)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<pre id="pre">foo<br>bar</pre>
+<p id="words">one two three</p>
+<script>
+"use strict";
+const selection = getSelection();
+
+test(() => {
+  const pre = document.getElementById("pre");
+  const [firstTextChild, , secondTextChild] = pre.childNodes;
+  selection.collapse(firstTextChild, 3);
+  selection.modify("move", "forward", "character");
+  assert_equals(selection.focusNode, secondTextChild);
+  assert_equals(selection.focusOffset, 0);
+}, "character move forward jumps <br>");
+
+test(() => {
+  const pre = document.getElementById("pre");
+  const [firstTextChild, , secondTextChild] = pre.childNodes;
+  selection.collapse(secondTextChild, 0);
+  selection.modify("move", "backward", "character");
+  assert_equals(selection.focusNode, firstTextChild);
+  assert_equals(selection.focusOffset, 3);
+}, "character move backward jumps <br>");
+
+test(() => {
+  const t = document.getElementById("words").firstChild;
+  selection.collapse(t, 5);
+  selection.modify("move", "forward", "character");
+  assert_equals(selection.focusNode, t);
+  assert_equals(selection.focusOffset, 6);
+  selection.modify("move", "backward", "character");
+  assert_equals(selection.focusOffset, 5);
+}, "character move and back");
+
+test(() => {
+  const t = document.getElementById("words").firstChild;
+  selection.collapse(t, 4);
+  selection.modify("extend", "backward", "word");
+  assert_equals(selection.focusNode, t);
+  assert_equals(selection.focusOffset, 3);
+  assert_equals(selection.toString(), " ");
+}, "extend backward word selects to word start");
+
+test(() => {
+  const t = document.getElementById("words").firstChild;
+  selection.collapse(t, 7);
+  selection.modify("move", "forward", "word");
+  assert_equals(selection.focusNode, t);
+  assert_equals(selection.focusOffset, 8);
+}, "move forward word to next boundary");
+
+test(() => {
+  const t = document.getElementById("words").firstChild;
+  selection.collapse(t, 0);
+  assert_throws_dom("NotSupportedError", () => {
+    selection.modify("move", "forward", "line");
+  });
+  assert_throws_js(TypeError, () => {
+    selection.modify("move", "forward");
+  });
+  assert_throws_dom("SyntaxError", () => {
+    selection.modify("move", "sideways", "word");
+  });
+}, "unimplemented granularity and bad arguments throw");
+</script>
+</body>
+</html>

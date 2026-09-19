@@ -7,6 +7,8 @@ use std::cmp::Ordering;
 
 use bitflags::bitflags;
 use dom_struct::dom_struct;
+use icu_segmenter::WordSegmenter;
+use icu_segmenter::options::WordBreakInvariantOptions;
 use js::context::{JSContext, NoGC};
 use rustc_hash::FxHashSet;
 use script_bindings::cell::DomRefCell;
@@ -32,7 +34,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::comparator::compare_dom_positions;
 use crate::dom::document::Document;
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::iterators::{PrePostIteration, UnrootedFollowingFlatTreeNodesTraversal};
+use crate::dom::iterators::{PrePostIteration, ShadowIncluding, UnrootedFollowingFlatTreeNodesTraversal};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::range::Range;
 use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
@@ -1379,6 +1381,57 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         )
     }
 
+    /// <https://w3c.github.io/selection-api/#dom-selection-modify>
+    fn Modify(
+        &self,
+        cx: &mut JSContext,
+        alter: DOMString,
+        direction: DOMString,
+        granularity: DOMString,
+    ) -> ErrorResult {
+        let extend = match alter.str().as_ref() {
+            "move" => false,
+            "extend" => true,
+            _ => return Err(Error::Syntax(None)),
+        };
+        // "left"/"right" are visual; assume LTR (bidi refinement later).
+        let forward = match direction.str().as_ref() {
+            "forward" | "right" => true,
+            "backward" | "left" => false,
+            _ => return Err(Error::Syntax(None)),
+        };
+        let granularity = match granularity.str().as_ref() {
+            "character" => ModifyGranularity::Character,
+            "word" => ModifyGranularity::Word,
+            // Valid but not yet implemented (need layout line geometry and
+            // sentence/paragraph segmentation).
+            "sentence" | "line" | "lineboundary" | "paragraph" | "documentboundary" => {
+                return Err(Error::NotSupported(None));
+            },
+            _ => return Err(Error::Syntax(None)),
+        };
+
+        // No selection: no-op.
+        let range = match self.active_range(cx) {
+            Some(range) => range,
+            None => return Ok(()),
+        };
+        let (focus_node, focus_offset) = match self.direction.get() {
+            Direction::Forwards => (range.end_container(), range.end_offset()),
+            _ => (range.start_container(), range.start_offset()),
+        };
+        let Some((node, offset)) =
+            modify_focus(&focus_node, focus_offset, forward, granularity)
+        else {
+            return Ok(());
+        };
+        if extend {
+            self.Extend(cx, &node, offset)
+        } else {
+            self.Collapse(cx, Some(&node), offset)
+        }
+    }
+
     /// <https://w3c.github.io/selection-api/#dom-selection-stringifier>
     fn Stringifier(&self, cx: &mut JSContext) -> DOMString {
         // > The stringification must return the string, which is the concatenation of the
@@ -1403,6 +1456,150 @@ impl<'dom> LayoutDom<'dom, Selection> {
     }
 }
 
+/// Movement unit for [`Selection::Modify`].
+#[derive(Clone, Copy, PartialEq)]
+enum ModifyGranularity {
+    Character,
+    Word,
+}
+
+/// First/last descendant text node (inclusive: the node itself if text).
+fn edge_text_descendant(node: &Node, forward: bool) -> Option<DomRoot<Node>> {
+    if node.is::<CharacterData>() {
+        return Some(DomRoot::from_ref(node));
+    }
+    if forward {
+        let mut current = node.GetFirstChild()?;
+        loop {
+            if current.is::<CharacterData>() {
+                return Some(current);
+            }
+            current = current.GetFirstChild()?;
+        }
+    } else {
+        let mut current = node.GetLastChild()?;
+        loop {
+            if current.is::<CharacterData>() {
+                return Some(current);
+            }
+            current = current.GetLastChild()?;
+        }
+    }
+}
+
+/// Move a focus point one unit forward or backward, returning the new
+/// (node, UTF-16 offset). Element foci descend to edge text; movement
+/// crosses text nodes. Returns None when there is nowhere to go.
+fn modify_focus(
+    focus_node: &DomRoot<Node>,
+    focus_offset: u32,
+    forward: bool,
+    granularity: ModifyGranularity,
+) -> Option<(DomRoot<Node>, u32)> {
+    // Normalize element foci to edge text first.
+    let (text_node, offset) = if focus_node.is::<CharacterData>() {
+        let len = focus_node
+            .downcast::<CharacterData>()?
+            .data()
+            .encode_utf16()
+            .count() as u32;
+        (focus_node.clone(), focus_offset.min(len))
+    } else {
+        let edge = edge_text_descendant(focus_node, forward)?;
+        let len = edge
+            .downcast::<CharacterData>()?
+            .data()
+            .encode_utf16()
+            .count() as u32;
+        (edge, if forward { 0 } else { len })
+    };
+    let text = text_node
+        .downcast::<CharacterData>()?
+        .data()
+        .to_string();
+    match granularity {
+        ModifyGranularity::Character => {
+            modify_character(&text_node, &text, offset, forward)
+        },
+        ModifyGranularity::Word => modify_word(&text_node, &text, offset, forward),
+    }
+}
+
+/// One UTF-16 unit forward/backward, crossing text nodes. Returns None at
+/// the document edge.
+fn modify_character(
+    text_node: &DomRoot<Node>,
+    text: &str,
+    offset: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    let len = text.encode_utf16().count() as u32;
+    if forward {
+        if offset < len {
+            // Step over one UTF-16 unit (a lone surrogate counts as one;
+            // pairs move in two steps, matching offsets).
+            return Some((text_node.clone(), offset + 1));
+        }
+        let root = text_node.owner_doc();
+        text_node
+            .following_nodes(root.upcast(), ShadowIncluding::No)
+            .filter_map(|node| {
+                node.downcast::<CharacterData>()?;
+                Some(node)
+            })
+            .next()
+            .map(|node| (node, 0))
+    } else {
+        if offset > 0 {
+            return Some((text_node.clone(), offset - 1));
+        }
+        let root = text_node.owner_doc();
+        text_node
+            .preceding_nodes(root.upcast())
+            .filter_map(|node| {
+                let data = node.downcast::<CharacterData>()?;
+                let len = data.data().encode_utf16().count() as u32;
+                Some((node, len))
+            })
+            .next()
+    }
+}
+
+/// One word forward/backward (ICU UAX #29 boundaries). Stays in-node;
+/// at the edge, crosses to the next/previous text like character movement.
+fn modify_word(
+    text_node: &DomRoot<Node>,
+    text: &str,
+    offset: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    use icu_segmenter::WordSegmenter;
+    use icu_segmenter::options::WordBreakInvariantOptions;
+
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    // Byte boundaries to UTF-16 offsets.
+    let mut boundaries: Vec<u32> = segmenter
+        .segment_str(text)
+        .map(|index| text[..index].encode_utf16().count() as u32)
+        .collect();
+    if boundaries.first() != Some(&0) {
+        boundaries.insert(0, 0);
+    }
+    let len = text.encode_utf16().count() as u32;
+    if boundaries.last() != Some(&len) {
+        boundaries.push(len);
+    }
+    let target = if forward {
+        boundaries.into_iter().find(|boundary| *boundary > offset)
+    } else {
+        boundaries.into_iter().rev().find(|boundary| *boundary < offset)
+    };
+    match target {
+        Some(target) => Some((text_node.clone(), target)),
+        // No boundary left in this node: cross over and stop at the edge.
+        None => modify_character(text_node, text, if forward { len } else { 0 }, forward),
+    }
+}
 enum FlatTreeNodePosition {
     Before(DomRoot<Node>),
     Inside(DomRoot<Node>),

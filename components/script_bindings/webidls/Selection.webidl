@@ -30,6 +30,7 @@ readonly attribute Node? anchorNode;
   [CEReactions, Throws]
   undefined deleteFromDocument();
   boolean containsNode(Node node, optional boolean allowPartialContainment = false);
+  [Throws] undefined modify(DOMString alter, DOMString direction, DOMString granularity);
   stringifier;
 };
 

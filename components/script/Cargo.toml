@@ -130,6 +130,7 @@ http = { workspace = true }
 httparse = { workspace = true }
 hyper_serde = { workspace = true }
 icu_locale_core = { workspace = true }
+icu_segmenter = { workspace = true }
 indexmap = { workspace = true }
 ipc-channel = { workspace = true }
 itertools = { workspace = true }
