@@ -51,12 +51,16 @@ test(() => {
 }, "extend backward word selects to word start");
 
 test(() => {
+  // Forward word steps land on word ends, skipping space-only segments
+  // (ground truth: upstream modify-extend-word-trailing-inline-block,
+  // 4 extends cover 4 words). From the end of "two" the next word end
+  // is the end of "three".
   const t = document.getElementById("words").firstChild;
   selection.collapse(t, 7);
   selection.modify("move", "forward", "word");
   assert_equals(selection.focusNode, t);
-  assert_equals(selection.focusOffset, 8);
-}, "move forward word to next boundary");
+  assert_equals(selection.focusOffset, 13);
+}, "move forward word skips to next word end");
 
 test(() => {
   const t = document.getElementById("words").firstChild;

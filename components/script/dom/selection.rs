@@ -1510,16 +1510,59 @@ fn edge_text_descendant(node: &Node, forward: bool) -> Option<DomRoot<Node>> {
     }
 }
 
+/// Resolve an element focus (container + child index) to the text position
+/// a step starts from. Forward movement starts at the end of the content
+/// before child `index` so the step crosses it; backward movement starts
+/// at the start of the content at `index` for the same reason.
+fn element_focus_position(
+    node: &DomRoot<Node>,
+    index: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    let children: Vec<DomRoot<Node>> = node.children().collect();
+    let index = (index as usize).min(children.len());
+    let text_len = |text: &DomRoot<Node>| {
+        text.downcast::<CharacterData>()
+            .map(|data| data.data().encode_utf16().count() as u32)
+    };
+    if forward {
+        for child in children[..index].iter().rev() {
+            if let Some(text) = edge_text_descendant(child, false) {
+                return Some((text.clone(), text_len(&text)?));
+            }
+        }
+        for child in children[index..].iter() {
+            if let Some(text) = edge_text_descendant(child, true) {
+                return Some((text, 0));
+            }
+        }
+        None
+    } else {
+        for child in children[index..].iter() {
+            if let Some(text) = edge_text_descendant(child, true) {
+                return Some((text, 0));
+            }
+        }
+        for child in children[..index].iter().rev() {
+            if let Some(text) = edge_text_descendant(child, false) {
+                return Some((text.clone(), text_len(&text)?));
+            }
+        }
+        None
+    }
+}
+
 /// Move a focus point one unit forward or backward, returning the new
-/// (node, UTF-16 offset). Element foci descend to edge text; movement
-/// crosses text nodes. Returns None when there is nowhere to go.
+/// (node, UTF-16 offset). Element foci resolve to the text edge at their
+/// child index; movement crosses text nodes. Returns None when there is
+/// nowhere to go.
 fn modify_focus(
     focus_node: &DomRoot<Node>,
     focus_offset: u32,
     forward: bool,
     granularity: ModifyGranularity,
 ) -> Option<(DomRoot<Node>, u32)> {
-    // Normalize element foci to edge text first.
+    // Normalize element foci to the text edge at their child index first.
     let (text_node, offset) = if focus_node.is::<CharacterData>() {
         let len = focus_node
             .downcast::<CharacterData>()?
@@ -1528,13 +1571,7 @@ fn modify_focus(
             .count() as u32;
         (focus_node.clone(), focus_offset.min(len))
     } else {
-        let edge = edge_text_descendant(focus_node, forward)?;
-        let len = edge
-            .downcast::<CharacterData>()?
-            .data()
-            .encode_utf16()
-            .count() as u32;
-        (edge, if forward { 0 } else { len })
+        element_focus_position(focus_node, focus_offset, forward)?
     };
     let text = text_node
         .downcast::<CharacterData>()?
@@ -1657,18 +1694,21 @@ fn word_around(text: &str, offset: u32) -> Option<(u32, u32)> {
     }
 }
 
-/// One word forward/backward (ICU UAX #29 boundaries). Stays in-node;
-/// at the edge, crosses to the next/previous text like character movement.
-fn modify_word(
-    text_node: &DomRoot<Node>,
-    text: &str,
-    offset: u32,
-    forward: bool,
-) -> Option<(DomRoot<Node>, u32)> {
-    use icu_segmenter::WordSegmenter;
-    use icu_segmenter::options::WordBreakInvariantOptions;
-
+/// UTF-16 boundaries (including 0 and text length) ending a word segment
+/// (ICU UAX #29), i.e. boundaries a forward word step can land on.
+/// Space-only segments contribute no landing boundary.
+fn word_end_boundaries(text: &str) -> Vec<u32> {
     let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let byte_index_of = |offset: u32| {
+        let mut utf16 = 0u32;
+        for (byte, c) in text.char_indices() {
+            if utf16 >= offset {
+                return byte;
+            }
+            utf16 += c.len_utf16() as u32;
+        }
+        text.len()
+    };
     // Byte boundaries to UTF-16 offsets.
     let mut boundaries: Vec<u32> = segmenter
         .segment_str(text)
@@ -1681,15 +1721,82 @@ fn modify_word(
     if boundaries.last() != Some(&len) {
         boundaries.push(len);
     }
-    let target = if forward {
-        boundaries.into_iter().find(|boundary| *boundary > offset)
-    } else {
-        boundaries.into_iter().rev().find(|boundary| *boundary < offset)
-    };
+    boundaries
+        .windows(2)
+        .filter(|pair| {
+            text[byte_index_of(pair[0])..byte_index_of(pair[1])]
+                .chars()
+                .any(|c| !c.is_whitespace())
+        })
+        .map(|pair| pair[1])
+        .collect()
+}
+
+/// All UTF-16 segment boundaries (including 0 and text length), used for
+/// backward word steps which stop at every boundary.
+fn word_boundaries(text: &str) -> Vec<u32> {
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let mut boundaries: Vec<u32> = segmenter
+        .segment_str(text)
+        .map(|index| text[..index].encode_utf16().count() as u32)
+        .collect();
+    if boundaries.first() != Some(&0) {
+        boundaries.insert(0, 0);
+    }
+    let len = text.encode_utf16().count() as u32;
+    if boundaries.last() != Some(&len) {
+        boundaries.push(len);
+    }
+    boundaries
+}
+
+/// One word forward/backward (ICU UAX #29 boundaries). Forward movement
+/// lands on word ends, skipping space-only segments (per upstream
+/// modify-extend-word-trailing-inline-block, 4 extends cover 4 words);
+/// backward movement stops at every boundary. At the node edge, forward
+/// continues into following text nodes looking for the next word end;
+/// backward crosses over and stops at the edge like character movement.
+fn modify_word(
+    text_node: &DomRoot<Node>,
+    text: &str,
+    offset: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    if forward {
+        if let Some(target) = word_end_boundaries(text)
+            .into_iter()
+            .find(|boundary| *boundary > offset)
+        {
+            return Some((text_node.clone(), target));
+        }
+        // No word end left in this node: look through following text,
+        // skipping nodes with no word (all-space runs).
+        let root = text_node.owner_doc();
+        for node in text_node
+            .following_nodes(root.upcast(), ShadowIncluding::No)
+            .filter(|node| node.is::<CharacterData>())
+        {
+            let next_text = node
+                .downcast::<CharacterData>()?
+                .data()
+                .to_string();
+            if let Some(target) = word_end_boundaries(&next_text)
+                .into_iter()
+                .find(|boundary| *boundary > 0)
+            {
+                return Some((node, target));
+            }
+        }
+        return None;
+    }
+    let target = word_boundaries(text)
+        .into_iter()
+        .rev()
+        .find(|boundary| *boundary < offset);
     match target {
         Some(target) => Some((text_node.clone(), target)),
         // No boundary left in this node: cross over and stop at the edge.
-        None => modify_character(text_node, text, if forward { len } else { 0 }, forward),
+        None => modify_character(text_node, text, 0, forward),
     }
 }
 enum FlatTreeNodePosition {
