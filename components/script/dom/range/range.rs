@@ -379,22 +379,32 @@ impl Range {
             return vec![];
         }
 
-        // Fast path: both boundary points in the same text node. Ask layout
-        // for the glyph-clipped boxes of exactly the selected slice (or the
-        // caret position when collapsed) instead of whole-node boxes.
+        // Glyph-clipped boxes of a slice of one text node. UTF-16 boundary
+        // offsets are converted to the UTF-32 units layout uses. Returns
+        // None when layout has no boxes (caller falls back to whole boxes),
+        // and for RTL-script text, whose visual order the LTR advance walk
+        // does not model (legacy whole boxes instead of wrong slices).
+        let text_slice_rects = |node: &Node, start16: u32, end16: u32| -> Option<Vec<Rect<Au, CSSPixel>>> {
+            let data = node.downcast::<CharacterData>()?;
+            let text = data.data();
+            if text.chars().any(|c| matches!(c,
+                '\u{0590}'..='\u{08FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}',
+            )) {
+                return None;
+            }
+            let to_utf32 = |offset: u32| Utf16CodeUnits(offset).to_utf32_code_units_in(&text);
+            let rects = node
+                .owner_window()
+                .text_rects_query(&node, to_utf32(start16), to_utf32(end16));
+            (!rects.is_empty()).then_some(rects)
+        };
+
+        // Fast path: both boundary points in the same text node.
         if std::ptr::eq(&*start, &*end) {
-            if let Some(data) = start.downcast::<CharacterData>() {
-                let text = data.data();
-                let to_utf32 =
-                    |offset: u32| Utf16CodeUnits(offset).to_utf32_code_units_in(&text);
-                let rects = start.owner_window().text_rects_query(
-                    &start,
-                    to_utf32(self.start_offset()),
-                    to_utf32(self.end_offset()),
-                );
-                if !rects.is_empty() {
-                    return rects;
-                }
+            if let Some(rects) =
+                text_slice_rects(&start, self.start_offset(), self.end_offset())
+            {
+                return rects;
             }
         }
 
@@ -408,13 +418,48 @@ impl Range {
             }
         }
 
+        // General case: clip partial text at both ends, whole boxes between.
+        // Note `following_nodes` excludes the start node itself, so prepend
+        // it (unless start and end coincide, handled by the fast path above
+        // or the collapsed path below).
+        let same_node = std::ptr::eq(&*start, &*end);
         let document = start.owner_doc();
         let unrooted_end = end.as_unrooted(no_gc);
-        start
+        let following: Vec<_> = start
             .following_nodes_unrooted(no_gc, document.upcast::<Node>(), ShadowIncluding::No)
             .take_while(move |node| *node != *end)
             .chain(iter::once(unrooted_end))
-            .flat_map(move |node| node.border_boxes())
+            .collect();
+        let nodes: Vec<_> = if same_node {
+            following
+        } else {
+            iter::once(start.as_unrooted(no_gc))
+                .chain(following.into_iter())
+                .collect()
+        };
+        let last = nodes.len().saturating_sub(1);
+        let start_offset = self.start_offset();
+        let end_offset = self.end_offset();
+        nodes
+            .into_iter()
+            .enumerate()
+            .flat_map(|(index, node)| {
+                let endpoint = if index == 0 {
+                    let text_len = node
+                        .downcast::<CharacterData>()
+                        .map(|data| data.data().encode_utf16().count() as u32);
+                    text_len.map(|len| (start_offset, len))
+                } else if index == last {
+                    Some((0, end_offset))
+                } else {
+                    None
+                };
+                match endpoint {
+                    Some((from, to)) => text_slice_rects(&node, from, to)
+                        .unwrap_or_else(|| node.border_boxes()),
+                    None => node.border_boxes(),
+                }
+            })
             .collect()
     }
 
