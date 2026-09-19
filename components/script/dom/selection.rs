@@ -767,6 +767,29 @@ impl Selection {
             let _ = self.Extend(cx, container, offset);
         }
     }
+
+    /// Double-click default action: select the word around a hit-test DOM
+    /// position (Legatus #8). Non-text containers keep the `mousedown`
+    /// collapse; whitespace prefers the following word, text end the
+    /// previous one; empty/whitespace-only text keeps the collapse.
+    pub(crate) fn select_word_at_dom_position(
+        &self,
+        cx: &mut JSContext,
+        container: &Node,
+        offset: Utf32CodeUnitsOrNodeOffset,
+    ) {
+        let Some(character_data) = container.downcast::<CharacterData>() else {
+            return;
+        };
+        let text = character_data.data().to_string();
+        let len = text.encode_utf16().count() as u32;
+        let offset = container.to_sibling_or_utf16_offset(offset).min(len);
+        let Some((start, end)) = word_around(&text, offset) else {
+            return;
+        };
+        let node = DomRoot::from_ref(container);
+        let _ = self.SetBaseAndExtent(cx, &node, start, &node, end);
+    }
 }
 
 impl SelectionMethods<crate::DomTypeHolder> for Selection {
@@ -1562,6 +1585,75 @@ fn modify_character(
                 Some((node, len))
             })
             .next()
+    }
+}
+
+/// ICU UAX #29 word segments of `text` as (start, end, is_word) UTF-16
+/// ranges. `is_word` is false for whitespace-only segments.
+fn word_segments(text: &str) -> Vec<(u32, u32, bool)> {
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let mut start_byte = 0usize;
+    let mut start = 0u32;
+    let mut segments = Vec::new();
+    for end_byte in segmenter.segment_str(text) {
+        let segment = &text[start_byte..end_byte];
+        let end = start + segment.encode_utf16().count() as u32;
+        segments.push((start, end, segment.chars().any(|c| !c.is_whitespace())));
+        start_byte = end_byte;
+        start = end;
+    }
+    segments
+}
+
+/// Word (start, end) UTF-16 offsets containing `offset`: a containing word
+/// wins (segment edges belong to the word, so clicks at a word start or at
+/// a word end before punctuation select it); whitespace prefers the
+/// following word, text end the previous one. Returns None when there is
+/// no word (empty or whitespace-only text).
+fn word_around(text: &str, offset: u32) -> Option<(u32, u32)> {
+    let segments = word_segments(text);
+    let len = segments.last().map(|(_, end, _)| *end).unwrap_or(0);
+    let offset = offset.min(len);
+    // A word containing the offset; edges belong to the word.
+    if let Some((start, end, _)) = segments
+        .iter()
+        .find(|(start, end, is_word)| *is_word && *start <= offset && offset < *end)
+    {
+        return Some((*start, *end));
+    }
+    // No containing word: a segment starting here decides. Whitespace (or
+    // text end) looks forward to the next word ...
+    let forward = segments
+        .iter()
+        .find(|(start, _, _)| *start == offset)
+        .is_none_or(|(_, _, is_word)| !is_word);
+    if forward {
+        if let Some((start, end, _)) = segments
+            .iter()
+            .find(|(start, _, is_word)| *is_word && *start >= offset)
+        {
+            return Some((*start, *end));
+        }
+    } else if let Some((start, end, _)) = segments
+        .iter()
+        .rev()
+        .find(|(_, end, is_word)| *is_word && *end <= offset)
+    {
+        // ... punctuation looks back to the previous word.
+        return Some((*start, *end));
+    }
+    // Fallback: nearest word on the other side (start/end of text).
+    if forward {
+        segments
+            .iter()
+            .rev()
+            .find(|(_, end, is_word)| *is_word && *end <= offset)
+            .map(|(start, end, _)| (*start, *end))
+    } else {
+        segments
+            .iter()
+            .find(|(start, _, is_word)| *is_word && *start >= offset)
+            .map(|(start, end, _)| (*start, *end))
     }
 }
 

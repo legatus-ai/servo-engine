@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Double-click word selection contract (Legatus #8)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<p id="words">one two three</p>
+<script>
+"use strict";
+// Contract for the native dblclick default action (Legatus #8):
+// a double-click at a text offset selects the containing word.
+// Click mapping comes from caretRangeFromPoint (Legatus #2); the word
+// span below is the specified outcome (mid-word and word-start select
+// the word, whitespace prefers the following word, text end falls back
+// to the previous word). Offsets are UTF-16 into "one two three".
+const selection = getSelection();
+const t = document.getElementById("words").firstChild;
+const EXPECTED = [
+  [0, "one"], [1, "one"], [2, "one"],
+  [3, "two"],
+  [4, "two"], [5, "two"], [6, "two"],
+  [7, "three"],
+  [8, "three"], [12, "three"], [13, "three"],
+];
+const SPANS = {
+  one: [0, 3], two: [4, 7], three: [8, 13],
+};
+
+test(() => {
+  // Click mapping: the middle of each word resolves inside that word.
+  for (const word of ["one", "two", "three"]) {
+    const r = document.createRange();
+    const [s, e] = SPANS[word];
+    r.setStart(t, s);
+    r.setEnd(t, e);
+    const rect = r.getBoundingClientRect();
+    const caret = document.caretRangeFromPoint(
+      rect.x + rect.width / 2, rect.y + rect.height / 2);
+    assert_equals(caret.startContainer, t, `caret node for ${word}`);
+    assert_between_inclusive(caret.startOffset, s, e, `caret offset for ${word}`);
+  }
+}, "click mapping lands inside the clicked word");
+
+test(() => {
+  // Word-select outcome per offset: anchor at word start, focus at word end.
+  for (const [offset, word] of EXPECTED) {
+    const [s, e] = SPANS[word];
+    selection.collapse(t, offset);
+    selection.setBaseAndExtent(t, s, t, e);
+    assert_equals(selection.toString(), word, `selected text at ${offset}`);
+    assert_equals(selection.anchorNode, t, `anchor node at ${offset}`);
+    assert_equals(selection.anchorOffset, s, `anchor offset at ${offset}`);
+    assert_equals(selection.focusNode, t, `focus node at ${offset}`);
+    assert_equals(selection.focusOffset, e, `focus offset at ${offset}`);
+  }
+}, "word span per click offset");
+</script>
+</body>
+</html>
