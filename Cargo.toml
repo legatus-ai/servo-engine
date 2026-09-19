@@ -470,11 +470,14 @@ codegen-units = 1
 # content-security-policy = { path = "../rust-content-security-policy" }
 #
 # Or for Stylo:
-# Legatus #7: sibling stylo checkout (branch legatus, commit b26e41f)
-# with text-overflow ungated. Requires the ../stylo sibling checkout at
-# that branch; keep it in sync and re-apply the longhands.toml hunk
-# there after every upstream stylo rebase. The pane renderer manifest
-# must carry the same patch to get the ellipsis.
+# Legatus #7: sibling stylo checkout, branch legatus at
+# b26e41f290f9d0a15d778d0300bae87f2ac2597a, with text-overflow ungated
+# (longhands.toml hunk removing it from layout.unimplemented).
+# A path is used because the fork lives on no remote yet; prefer a git
+# dependency on repo+rev when it does. Requires the ../stylo sibling
+# checkout at that branch; keep it in sync and re-apply the hunk there
+# after every upstream stylo rebase. The pane renderer manifest must
+# carry the same patch to get the ellipsis.
 [patch."https://github.com/servo/stylo"]
 selectors = { path = "../stylo/selectors" }
 servo_arc = { path = "../stylo/servo_arc" }
