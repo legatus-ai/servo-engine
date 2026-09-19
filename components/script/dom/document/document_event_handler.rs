@@ -1190,7 +1190,7 @@ impl DocumentEventHandler {
 
         let click_count = self.click_counting_info.borrow().count;
         element.set_click_in_progress(true);
-        let click_result = MouseEvent::for_platform_button_event(
+        MouseEvent::for_platform_button_event(
             cx,
             atom!("click"),
             event,
@@ -1213,8 +1213,7 @@ impl DocumentEventHandler {
         // We follow the latter approach here, considering that every sequence of
         // even numbered clicks is a series of double clicks.
         if click_count.is_multiple_of(2) {
-            let document = self.window.Document();
-            let dblclick_result = MouseEvent::for_platform_button_event(
+            MouseEvent::for_platform_button_event(
                 cx,
                 Atom::from("dblclick"),
                 event,
@@ -1226,18 +1225,6 @@ impl DocumentEventHandler {
             )
             .upcast::<Event>()
             .dispatch(cx, element.upcast(), false);
-            // Default action of dblclick (Legatus #8): upgrade the `mousedown`
-            // collapse to a word selection, unless the click sequence was
-            // canceled. Non-text positions keep the collapse.
-            if click_result && dblclick_result {
-                if let Some((container, offset)) =
-                    hit_test_result.dom_position_for_selection.as_ref()
-                {
-                    if let Some(selection) = document.GetSelection(cx) {
-                        selection.select_word_at_dom_position(cx, container, *offset);
-                    }
-                }
-            }
         }
     }
 

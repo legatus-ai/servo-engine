@@ -68,6 +68,8 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::{
     GetRootNodeOptions, NodeConstants, NodeMethods,
 };
 use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
+use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEventMethods;
+use crate::dom::uievent::UIEvent;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::ShadowRoot_Binding::ShadowRootMethods;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::{
     ShadowRootMode, SlotAssignmentMode,
@@ -4620,7 +4622,18 @@ impl VirtualMethods for Node {
             .as_ref()
             .map(|(node, offset)| (node, *offset))
             .unwrap_or((&hit_test_result.node, Utf32CodeUnitsOrNodeOffset(0)));
-        selection.collapse_to_dom_position(cx, container, offset);
+        // A mousedown that continues a click sequence (detail >= 2, i.e. the
+        // second press of a double click) upgrades the caret to a word
+        // selection (Legatus #8), matching other browsers. This runs here —
+        // not on mouseup/dblclick — because only the button-down hit test
+        // carries a DOM position for selection.
+        if event.upcast::<UIEvent>().Detail() >= 2 &&
+            hit_test_result.dom_position_for_selection.is_some()
+        {
+            selection.select_word_at_dom_position(cx, container, offset);
+        } else {
+            selection.collapse_to_dom_position(cx, container, offset);
+        }
         document
             .event_handler()
             .install_drag_gesture(DragGesture::new(DragHandler::DocumentSelection(

@@ -1642,19 +1642,29 @@ fn word_segments(text: &str) -> Vec<(u32, u32, bool)> {
     segments
 }
 
-/// Word (start, end) UTF-16 offsets containing `offset`: a containing word
-/// wins (segment edges belong to the word, so clicks at a word start or at
-/// a word end before punctuation select it); whitespace prefers the
-/// following word, text end the previous one. Returns None when there is
-/// no word (empty or whitespace-only text).
+/// Word (start, end) UTF-16 offsets containing `offset`: a word starting
+/// at or strictly containing the offset wins; a click exactly at a word
+/// end (the caret the hit test reports there) selects the word just
+/// clicked, not the following one. Whitespace strictly inside a longer
+/// run prefers the following word, text start/end fall back to the
+/// nearest word. Returns None when there is no word (empty or
+/// whitespace-only text).
 fn word_around(text: &str, offset: u32) -> Option<(u32, u32)> {
     let segments = word_segments(text);
     let len = segments.last().map(|(_, end, _)| *end).unwrap_or(0);
     let offset = offset.min(len);
-    // A word containing the offset; edges belong to the word.
+    // Rule 1: a word strictly containing the offset, or starting at it.
     if let Some((start, end, _)) = segments
         .iter()
         .find(|(start, end, is_word)| *is_word && *start <= offset && offset < *end)
+    {
+        return Some((*start, *end));
+    }
+    // Rule 2: a click exactly at a word end (the caret the hit test reports
+    // there) selects the word just clicked, not the following one.
+    if let Some((start, end, _)) = segments
+        .iter()
+        .find(|(_, end, is_word)| *is_word && *end == offset)
     {
         return Some((*start, *end));
     }
