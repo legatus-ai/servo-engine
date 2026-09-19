@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>execCommand copy security gates (Legatus #3)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<div id="ce" contenteditable="true">edit me</div>
+<p id="plain">plain text here</p>
+<input id="pw" type="password" value="secret123">
+<script>
+"use strict";
+// This page runs without any user gesture (an automated harness run), so
+// navigator.userActivation.isActive is false; document.execCommand("copy")
+// must then fail WITHOUT touching the clipboard or firing any clipboard
+// event (clipboard-apis step 1: script-triggered + !script-may-access =>
+// return false before firing the event).
+const selection = getSelection();
+const ce = document.getElementById("ce");
+const pw = document.getElementById("pw");
+const events = [];
+document.addEventListener("copy", () => events.push("copy"));
+document.addEventListener("clipboardchange", () => events.push("change"));
+
+test(() => {
+  assert_true(navigator.userActivation.isActive === false, "no transient activation in harness");
+}, "harness run has no transient activation");
+
+test(() => {
+  ce.focus();
+  selection.selectAllChildren(ce);
+  assert_false(selection.isCollapsed, "non-collapsed selection");
+  assert_false(document.execCommand("copy"), "copy gated on transient activation");
+  assert_array_equals(events, [], "no copy/clipboardchange events fired");
+}, "copy without activation returns false and fires no clipboard event");
+
+test(() => {
+  // The plain-text (non-editable) selection path: a live range exists so
+  // the command is enabled, but the copy action is still gated on
+  // transient activation and returns false.
+  const p = document.getElementById("plain");
+  const t = p.firstChild;
+  selection.collapse(t, 0);
+  selection.extend(t, 5);
+  assert_false(selection.isCollapsed, "non-collapsed plain selection");
+  assert_false(document.execCommand("copy"), "copy gated on plain selection too");
+  assert_array_equals(events, [], "still no clipboard events");
+}, "copy gated on a plain (non-editable) selection");
+
+test(() => {
+  // A selection inside an <input type=password> must never be copied. In
+  // this gate-ordered environment both gates align on false; the password
+  // guard is the second line of defense (it also blocks when activation
+  // exists).
+  pw.focus();
+  pw.select();
+  assert_false(document.execCommand("copy"), "password selection not copied");
+  assert_array_equals(events, [], "no clipboard events for password selection");
+}, "password field selection is not copied");
+</script>
+</body>
+</html>
