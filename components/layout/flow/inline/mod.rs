@@ -69,6 +69,7 @@
 //!
 
 pub mod construct;
+mod ellipsis;
 mod full_width;
 pub mod inline_box;
 pub mod line;
@@ -1213,7 +1214,30 @@ impl InlineFormattingContextLayout<'_> {
 
         let baseline_offset = effective_block_advance.find_baseline_offset();
         let start_positioning_context_length = self.positioning_context.len();
-        let fragments = LineItemLayout::layout_line_items(
+        // Phase-1 `text-overflow: ellipsis` (Legatus #7): the space this
+        // line may occupy, float-adjusted, minus any line-start shift
+        // (text-indent, non-start alignment).
+        let placement_inline_size = line_to_layout
+            .placement_among_floats
+            .get()
+            .map(|placement| placement.size.inline)
+            .unwrap_or_else(|| self.containing_block().size.inline);
+        let placement_inline_start = line_to_layout
+            .placement_among_floats
+            .get()
+            .map(|placement| placement.start_corner.inline)
+            .unwrap_or(Au::zero());
+        let shift = if inline_start_position > placement_inline_start {
+            inline_start_position - placement_inline_start
+        } else {
+            Au::zero()
+        };
+        let available_inline_size = if placement_inline_size > shift {
+            placement_inline_size - shift
+        } else {
+            Au::zero()
+        };
+        let mut fragments = LineItemLayout::layout_line_items(
             self,
             line_to_layout.line_items,
             start_position,
@@ -1222,6 +1246,14 @@ impl InlineFormattingContextLayout<'_> {
             is_phantom_line,
             line_to_layout.for_block_level,
         );
+        if !is_phantom_line {
+            ellipsis::truncate_line_for_ellipsis(
+                self.layout_context,
+                self.containing_block().style,
+                &mut fragments,
+                available_inline_size,
+            );
+        }
 
         if !is_phantom_line {
             let baseline = baseline_offset + block_start_position;

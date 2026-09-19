@@ -584,6 +584,67 @@ impl ShapedTextSlice {
         self.glyph_range.len()
     }
 
+    /// Whether this slice's glyphs are stored for right-to-left text (glyph
+    /// order is physical left-to-right either way; use this to map between
+    /// physical and visual ends when truncating).
+    #[inline]
+    pub fn is_rtl(&self) -> bool {
+        self.shaped_text.is_rtl
+    }
+
+    /// Split this slice into leading and trailing parts at a physical glyph
+    /// boundary, recomputing advances, character counts and word-separator
+    /// counts for both sides. Either side may be empty.
+    pub fn split_at_glyph(&self, leading_glyph_count: usize) -> (Arc<Self>, Arc<Self>) {
+        let leading_glyph_count = leading_glyph_count.min(self.glyph_range.len());
+        let mut leading_advance = Au::zero();
+        let mut leading_characters = Utf32CodeUnits(0);
+        let mut leading_separators = 0;
+        for glyph in self
+            .shaped_text
+            .glyph_slice(self.glyph_range.clone())
+            .take(leading_glyph_count)
+        {
+            leading_advance += glyph.advance();
+            leading_characters += glyph.character_count();
+            if glyph.char_is_word_separator() {
+                leading_separators += 1;
+            }
+        }
+        let mut trailing_advance = Au::zero();
+        let mut trailing_characters = Utf32CodeUnits(0);
+        let mut trailing_separators = 0;
+        for glyph in self
+            .shaped_text
+            .glyph_slice(self.glyph_range.clone())
+            .skip(leading_glyph_count)
+        {
+            trailing_advance += glyph.advance();
+            trailing_characters += glyph.character_count();
+            if glyph.char_is_word_separator() {
+                trailing_separators += 1;
+            }
+        }
+        let split = self.glyph_range.start + leading_glyph_count;
+        let leading = Arc::new(Self {
+            shaped_text: self.shaped_text.clone(),
+            glyph_range: self.glyph_range.start..split,
+            total_advance: leading_advance,
+            character_count: leading_characters,
+            total_word_separators: leading_separators,
+            slice_type: self.slice_type.clone(),
+        });
+        let trailing = Arc::new(Self {
+            shaped_text: self.shaped_text.clone(),
+            glyph_range: split..self.glyph_range.end,
+            total_advance: trailing_advance,
+            character_count: trailing_characters,
+            total_word_separators: trailing_separators,
+            slice_type: self.slice_type.clone(),
+        });
+        (leading, trailing)
+    }
+
     /// The number of characters that were consumed to produce this [`ShapedTextSlice`]. Some
     /// characters correspond to more than one glyph and some glyphs correspond to more than
     /// one character.
