@@ -67,6 +67,16 @@ outside forms, css outside the listed modules, dom outside events,
 workers, crypto, media, etc. Perf (Speedometer) deferred: needs a
 scripted harness that does not exist yet.
 
+## Prioritised next: flexbox + grid (pane MUI dependency)
+
+Not because they are the lowest scores (svg is lower) but because they
+are the highest-traffic for our own product: the pane UI is React +
+full MUI, and MUI layout is flexbox and grid almost everywhere. A
+30-point flexbox gap is the probability that a card, a dialog, or a
+data grid renders wrong in Gary's pane. These two rows get attention
+ahead of svg; see `docs/flexbox-grid-triage.md` for the failure
+clusters.
+
 ## Reproduce
 
 Per-dir foreground runs (see BUILDING.md long-batch rules):
