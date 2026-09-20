@@ -38,23 +38,31 @@ green), revert our implementation commit, keep our regression test,
 and note the superseding upstream commit in the row. Default on close
 calls: ask Vitruvius rather than guess.
 
-### Known constraints (discovered during #1–#7)
+### Known constraints (corrected during sync-1)
 
-- This checkout has no `ffi/` dir, so `cargo` with
-  `servo-engine/Cargo.toml` as manifest fails at load. All builds run
-  through downstream workspaces (today the runtime probe). The sync
-  verification build therefore depends on a cooperating downstream
-  manifest — which the engine side must not modify. Concretely: the
-  pane/renderer workspace must carry the same stylo `[patch]` (row #7
-  notes this) or verification builds silently test upstream Stylo.
-- No servoshell build exists on this machine (no `target/` in
-  servo-engine; a first build is 40+ min and webdriver/wptrunner flow
-  is unproven here). Full-WPT runs are pane-CI territory; the sync
-  gate above is the probe-runnable subset, stated as such.
-- Path `[patch]` entries require the sibling checkout layout
-  (`../servo-engine`, `../rust-url`, `../stylo`). Documented in the
-  workspace `Cargo.toml` comment; any new consumer needs the same
-  siblings.
+- CORRECTION: the fork tracks everything — the earlier "trimmed fork"
+  diagnosis was wrong. This is a sparse checkout whose profile hides
+  `ffi/`, `python/`, `resources/`, `.cargo/`, `support/`,
+  `tests/unit/`, most of `tests/wpt/tests/`, etc. Sync-1 expanded the
+  profile (plus `tools/` for the gate crate below); no restore commit
+  was needed. Future syncs: keep the sparse profile in sync with the
+  workspace members and the tracked WPT focus dirs.
+- The engine workspace now loads standalone, with its own stylo
+  `[patch]`. The remaining coupling: any downstream workspace (runtime
+  probe, pane renderer) resolves its OWN stylo unless it carries the
+  same path patch — sync-1 verification used a temporary home-config
+  patch for the probe rebuild only (removed immediately after); the
+  pane/renderer manifests must carry the patch (pane-engineer action)
+  or they silently test upstream Stylo.
+- Fresh full builds on Windows need (all found during sync-1):
+  NASM on PATH, a working MSVC env (VsDevCmd is broken in this
+  BuildTools SKU; see `msvc-env.ps1` pattern: hand-rolled INCLUDE/LIB
+  for MSVC 14.44 + SDK 26100), LLVM on PATH + LIBCLANG_PATH, and
+  MozillaBuild/moztools for mozjs-sys — NOT installed here, so fresh
+  `servo`/`servoshell` compiles are blocked on Windows pending a
+  MozillaBuild install; cached workspaces (runtime probe) rebuild fine.
+  Servoshell + wptrunner therefore move to WSL (Ubuntu-24.04 present)
+  unless MozillaBuild gets installed.
 
 ## 2. Scorecard (`docs/scorecard.md`, updated every sync)
 
