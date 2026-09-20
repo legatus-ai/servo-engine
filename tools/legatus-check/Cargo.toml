@@ -15,5 +15,10 @@ fonts = { workspace = true }
 layout = { workspace = true }
 script = { workspace = true }
 
+# Build-time fork check (see build.rs): resolves against the same Stylo
+# as everything else in this workspace, i.e. our path patch when present.
+[build-dependencies]
+stylo_traits = { workspace = true }
+
 [lints]
 workspace = true

@@ -474,8 +474,10 @@ codegen-units = 1
 #
 # Or for Stylo:
 # Legatus #7: sibling stylo checkout, branch legatus at
-# b26e41f290f9d0a15d778d0300bae87f2ac2597a, with text-overflow ungated
-# (longhands.toml hunk removing it from layout.unimplemented).
+# 33a783cbd2301b71494921272dc472f9678c2911, with text-overflow ungated
+# (longhands.toml hunk removing it from layout.unimplemented) plus the
+# legatus_text_overflow_ungated fork marker consumed as a build-time
+# check by tools/legatus-check (fails against upstream Stylo).
 # A path is used because the fork lives on no remote yet; prefer a git
 # dependency on repo+rev when it does. Requires the ../stylo sibling
 # checkout at that branch; keep it in sync and re-apply the hunk there
