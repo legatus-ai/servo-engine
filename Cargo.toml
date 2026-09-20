@@ -450,6 +450,19 @@ codegen-units = 1
 #
 #     <crate> = { path = "/path/to/local/checkout" }
 #
+# Legatus: sibling rust-url checkout, branch legatus at
+# 98a5fbb (upstream #1127 plus percent-encode trailing space in opaque
+# path, servo/rust-url#1123) plus the legatus_opaque_path_trailing_space_encoded
+# fork marker consumed as a build-time check by tools/legatus-check
+# (fails against upstream url). Without this patch the engine workspace
+# resolves crates.io url while downstream workspaces resolve the fork —
+# same source, two different URL parsers (invariant 13). A path is used
+# because the fork lives on no remote yet; prefer a git dependency on
+# repo+rev when it does. Requires the ../rust-url sibling checkout at
+# that branch; keep it in sync. The pane/renderer manifests must carry
+# the same patch.
+url = { path = "../rust-url/url" }
+#
 # For html5ever:
 #
 # html5ever = { path = "../html5ever/html5ever" }
