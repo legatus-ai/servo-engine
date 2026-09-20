@@ -12,6 +12,6 @@
 //! servo-engine workspace `Cargo.toml` to the workspace you are building.
 
 fn main() {
-    assert!(stylo_traits::legatus_text_overflow_ungated());
+    assert!(style_traits::legatus_text_overflow_ungated());
     println!("cargo:rerun-if-changed=build.rs");
 }
