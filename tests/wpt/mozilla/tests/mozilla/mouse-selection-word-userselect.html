@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Double click composes user-select adjustment with word upgrade (Legatus #8 + sync-1)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+</head>
+<body>
+<p id="plain">hello world</p>
+<p><span id="all" style="user-select: all">hello world</span></p>
+<p><span id="none" style="user-select: none">hello world</span></p>
+<script>
+"use strict";
+// Native-input tier (pane harness / wptrunner with webdriver): drives REAL
+// trusted input, which the probe cannot synthesize (synthetic mousedown
+// never reaches the default action; verified 2026-09-19).
+//
+// Locks the sync-1 conflict resolution in handle_mousedown_event, where
+// upstream's user-select anchor adjustment (#48137) composes with our
+// detail>=2 word upgrade (#8): the adjustment runs FIRST, then the
+// upgrade runs on the ADJUSTED position. Each half dropped changes the
+// outcome below:
+// - adjust dropped: dblclick in #all selects "world" (raw position).
+// - upgrade dropped: dblclick in #all collapses to (span, 0).
+// - composed (correct): dblclick in #all selects the span contents.
+// The #none case locks the early return (no selection at all).
+async function doubleClickAt(node, offset) {
+  const r = document.createRange();
+  r.setStart(node, offset);
+  r.setEnd(node, offset + 1);
+  const rect = r.getBoundingClientRect();
+  const x = Math.round(rect.x + rect.width / 2);
+  const y = Math.round(rect.y + rect.height / 2);
+  await new test_driver.Actions()
+    .pointerMove(x, y)
+    .pointerDown().pointerUp()
+    .pointerDown().pointerUp()
+    .send();
+}
+
+promise_test(async () => {
+  const t = document.getElementById("plain").firstChild;
+  await doubleClickAt(t, 8);
+  const selection = getSelection();
+  assert_equals(selection.toString(), "world", "plain dblclick selects the word");
+  assert_equals(selection.anchorNode, t, "anchor is the text node");
+  assert_equals(selection.anchorOffset, 6, "anchor at word start");
+  assert_equals(selection.focusOffset, 11, "focus at word end");
+}, "control: plain double click selects the word under the cursor");
+
+promise_test(async () => {
+  const span = document.getElementById("all");
+  const t = span.firstChild;
+  await doubleClickAt(t, 8);
+  const selection = getSelection();
+  assert_equals(selection.toString(), "hello world",
+    "dblclick in user-select:all selects the element contents, not the word");
+  assert_equals(selection.anchorNode, span, "anchor snapped to the all element");
+  assert_equals(selection.anchorOffset, 0, "anchor at element start");
+  assert_equals(selection.focusNode, span, "focus in the all element");
+  assert_equals(selection.focusOffset, 1, "focus at element end");
+}, "composition: adjust snaps to user-select:all, upgrade selects its contents");
+
+promise_test(async () => {
+  const t = document.getElementById("none").firstChild;
+  getSelection().removeAllRanges();
+  await doubleClickAt(t, 8);
+  const selection = getSelection();
+  assert_equals(selection.toString(), "",
+    "dblclick in user-select:none selects nothing");
+  assert_equals(selection.anchorNode, null, "no anchor without user-select");
+}, "composition: user-select:none returns before any selection change");
+</script>
+</body>
+</html>

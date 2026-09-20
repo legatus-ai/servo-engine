@@ -4653,11 +4653,17 @@ impl VirtualMethods for Node {
         // selection (Legatus #8), matching other browsers. This runs here —
         // not on mouseup/dblclick — because only the button-down hit test
         // carries a DOM position for selection. The position was already
-        // adjusted for `user-select` above.
+        // adjusted for `user-select` above: when the adjustment snapped the
+        // anchor to an element (user-select: all), the double-click selects
+        // that element's contents as a unit instead of a word.
         if event.upcast::<UIEvent>().Detail() >= 2 &&
             hit_test_result.dom_position_for_selection.is_some()
         {
-            selection.select_word_at_dom_position(cx, &container, offset);
+            if container.downcast::<CharacterData>().is_some() {
+                selection.select_word_at_dom_position(cx, &container, offset);
+            } else {
+                let _ = selection.SelectAllChildren(cx, &container);
+            }
         } else {
             selection.collapse_to_dom_position(cx, &container, offset);
         };
