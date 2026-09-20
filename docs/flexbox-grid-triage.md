@@ -54,3 +54,33 @@ recorded in the scorecard).
 
 Method: per-dir foreground wptrunner runs (BUILDING.md rules),
 `--log-raw` parsed at `test_status` level, clustered by parent dir.
+
+## Horizontal-tb LTR filter (the pane-relevant gap)
+
+Raw percentages overstate our problem: the pane is horizontal-tb LTR.
+Filtered split — (a) files with no vertical/WM content, (b)
+WM/direction-attributed subtests, (c) ambiguous (mixed-mode file,
+unattributed subtest):
+
+- Flexbox: (a) 335 subtests / 44 files, (b) 688, (c) 459. The (a)
+  list is led by animation interpolation (order/flex-grow/basis/
+  shrink + composition + discrete ≈ 195, low product relevance —
+  static MUI rarely animates flex properties), then automatic
+  minimums (flex-minimum-height-031: 36), baseline alignment
+  (~30), intrinsic sizing/parsing (~40), and the abspos
+  physical-justify family (~10). Product-relevant core ≈ 140
+  subtests plus (c)'s horizontal share — small enough to work
+  through, and NOT the abspos-vertical story.
+- Grid: (a) 3812 subtests / 213 files, (b) 2850, (c) 429. The (a)
+  list is led by abspos staticpos against grid AREAS
+  (`positioned-grid-descendants-*`, ~90-99 failing subtests EACH —
+  popovers/menus/overlays in grid areas, directly product-relevant),
+  flex-track intrinsic sizes (204), track-sizing (89), grid-template
+  interpolation (~460, low relevance like flexbox), and parsing.
+  Unlike flexbox, grid's horizontal gap is LARGE and concentrated:
+  grid-area abspos staticpos first, then intrinsic track sizing.
+
+Verdict on the expectation: confirmed for flexbox (practical backlog
+is small), destroyed for grid (the horizontal gap is real, ~3800
+subtests, led by abspos-in-grid-area). MUI data grids will feel this;
+flexbox mostly will not.

@@ -84,3 +84,16 @@ Per-dir foreground runs (see BUILDING.md long-batch rules):
 <dirs...>` then aggregate `test_status` PASS/total by directory.
 wpt.fyi columns: `/api/search?run_ids=<id>&q=<dir>`, keep results whose
 test starts with `/<dir>/`, sum `legacy_status` passes/total.
+
+## Methodological lesson (sync-1 triage)
+
+A raw conformance percentage answers how COMPLETE the engine is, not
+how well OUR product will render. The pane is horizontal-tb LTR
+English, so ~480 of ~1480 flexbox failures (vertical writing-mode
+symptoms of one flow bug) can never affect what Gary sees — yet they
+dominate the headline gap. The second question needs the
+writing-mode/direction filter applied BEFORE the number means anything
+to us: split failing subtests into (a) horizontal-only files,
+(b) WM/direction-attributed, (c) ambiguous (mixed-mode file,
+unattributed subtest). True product gap lies in (a) plus (c)'s
+horizontal share. See `docs/flexbox-grid-triage.md`.
