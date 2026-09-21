@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>elementFromPoint over [hidden] subtrees after DOM mutation (Legatus row 6)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  section { height: 30px; width: 200px; background: #cff; }
+  section.hidden { display: none; }
+  .tab { height: 20px; width: 100px; background: #fcf; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<script>
+"use strict";
+// Build 10 sibling sections, each with children. Toggle [hidden] on the
+// first 5 (display:none subtrees), mutate children of later sections so
+// the document is long-lived + morphed, as the pane does.
+const host = document.getElementById("host");
+const sections = [];
+for (var i = 0; i < 10; i++) {
+  const s = document.createElement("section");
+  const b = document.createElement("div");
+  b.className = "box";
+  b.textContent = "sec" + i;
+  s.appendChild(b);
+  host.appendChild(s);
+  sections.push(s);
+}
+// Morph children several times on visible + hidden alike.
+for (var round = 0; round < 3; round++) {
+  sections.forEach(function (s, i) {
+    const c = s.firstElementChild;
+    const n = document.createElement("span");
+    n.textContent = "r" + round + "-" + i;
+    c.appendChild(n);
+    if (i % 3 === 0) { c.textContent = c.textContent + "x"; }
+  });
+}
+
+test(() => {
+  for (var i = 0; i < 5; i++) { sections[i].classList.add("hidden"); }
+}, "toggle hidden on first five");
+
+test(() => {
+  const s6 = sections[6];
+  const r = s6.getBoundingClientRect();
+  const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  assert_not_equals(el, null, "element at visible section centre");
+  assert_true(s6.contains(el), "hit inside section 6, not a [hidden] sibling");
+}, "elementFromPoint hits the visible section after hidden toggles + mutations");
+</script>
+</body>
+</html>
