@@ -97,3 +97,17 @@ to us: split failing subtests into (a) horizontal-only files,
 (b) WM/direction-attributed, (c) ambiguous (mixed-mode file,
 unattributed subtest). True product gap lies in (a) plus (c)'s
 horizontal share. See `docs/flexbox-grid-triage.md`.
+
+## How determinism was checked (not assumed)
+
+Full-dir numbers are compared as UNIQUE (test, subtest) sets
+(last-wins), never raw line counts — duplicate log lines made two
+runs look different when the sets were identical. Repeatability was
+measured, not assumed: one 4-file scope run six times (three at
+--processes 1, three at --processes 4) gave bit-identical results
+(57/303/0/360) every time, and a full css-grid re-run against baseline
+gave zero set-delta (7697/14788 both sides, 0 newly passing, 0 newly
+failing). Process count is not the variable; scope must still match
+exactly (solo-vs-full-dir differences are scope effects, and the
+zz-rects ERROR in one run was a deleted scratch file lingering in the
+local manifest, not signal).
