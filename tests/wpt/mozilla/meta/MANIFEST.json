@@ -14239,14 +14239,21 @@
       {}
      ]
     ],
-    "element-setAttributeNode.html": [
-     "b7c4964a135fdb04545ef3d00fa5f0d5fc222897",
-     [
-      null,
-      {}
-     ]
-    ],
-    "empty-clientrect.html": [
+     "element-setAttributeNode.html": [
+      "b7c4964a135fdb04545ef3d00fa5f0d5fc222897",
+      [
+       null,
+       {}
+      ]
+     ],
+     "elementfrompoint-hidden-morph.html": [
+      "ba2d234ce87f3fdba9da9a7bbbe7b155d6af2eac",
+      [
+       null,
+       {}
+      ]
+     ],
+     "empty-clientrect.html": [
      "d1aa50b22383160889237b2a12ef9bdd00fae7a9",
      [
       null,
