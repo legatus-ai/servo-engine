@@ -22,19 +22,26 @@ happened yet — `Document::new` for the navigation runs later in the
 `load()`-family path (~line 3550), and session history commits after
 that. So metadata time is before page-A teardown by construction.
 
-Recognise a download when EITHER holds:
+Recognise a download when ANY holds (narrow by default; wider MIME
+sniffing is a recorded follow-up, not this row):
 
 - `Content-Disposition: attachment` (parse via the `headers` crate,
   same `typed_get` pattern the code already uses for `LastModified`
-  two lines above the hook point), filename from its `filename`/`filename*`
-  parameter when present;
-- or the content type is not renderable as a document (not HTML/XML,
-  text, image, or anything with a parser/loader downstream) — the
-  `content_type` match already computed a few lines below is the
-  natural place to share the predicate, extended, not duplicated.
+  two lines above the hook point), filename from its `filename`/
+  `filename*` parameter when present;
+- the navigation carries the download flag from an `<a download>`
+  anchor (currently unimplemented upstream: `htmlanchorelement.rs:385`
+  `TODO: Download the link is 'download' attribute is set` — thread it
+  by marking the navigation/fetch request at the `follow_hyperlink`
+  call site, carried as the request initiator to metadata time);
+- `application/octet-stream` content type.
 
-Both inputs (headers + content type) exist at the hook point; nothing
-new needs plumbing through fetch.
+SCOPE: top-level and iframe navigations only (destination Document /
+frame loads). Subresource fetches (`fetch()`, XHR, `<img>`) are NEVER
+downloads however their MIME reads — gate on the load destination at
+the hook point. An iframe download reports to the TOP-LEVEL webview's
+delegate (WebViewDelegate is per-webview), carrying the initiating
+frame's URL in the request so the embedder can tell which frame asked.
 
 ## 2. Delegate API
 
@@ -45,6 +52,7 @@ fn request_download(&self, _webview: WebView, request: DownloadRequest) {}
 
 pub struct DownloadRequest {
     pub url: ServoUrl,
+    pub frame_url: Option<ServoUrl>, // initiating frame, if not top-level
     pub suggested_filename: Option<String>,
     pub mime: Option<String>,
     pub size_hint: Option<u64>, // from Content-Length when present
@@ -54,16 +62,42 @@ impl DownloadRequest {
     pub fn deny(self);
 }
 impl Drop for DownloadRequest {
-    // Fail closed, exactly like NavigationRequest's drop: an embedder
-    // that never answers (including every existing embedder, which does
-    // not implement the method) denies and keeps page A.
+    // Fail closed: an embedder that never answers (including every
+    // existing embedder, which does not implement the method) denies
+    // and keeps page A. NOTE this is the opposite default from
+    // NavigationRequest::drop (which allows); downloads fail closed
+    // deliberately, mirroring the runtime's origin boundary.
 }
 ```
 
+Message path, mirroring `NavigationRequest::allow/deny`
+(`webview_delegate.rs:41-69`): the request carries a
+`ConstellationProxy` + id and answers via
+`EmbedderToConstellationMessage`, so it works in-process and across
+processes unchanged.
+
+PARKED, NOT BLOCKED. The decision happens in the script thread; the
+delegate lives with the embedder. On trigger, script holds the
+`FetchMetadata`, creates no document, and stops the body from
+accumulating (chunks arriving before the answer are dropped, not
+buffered — Allow is out of scope, so no bytes ever need keeping).
+It then returns to its loop. It MUST NOT wait on the embedder: an
+embedder pumping its own loop while script waits is a deadlock (the
+runtime hit exactly this ordering class in its item 1).
+
+TIMEOUT: every parked load carries a deadline (propose 10s; exact
+mechanism — per-turn check vs oneshot timer — at implementation). If no
+answer arrives, script denies and cancels the fetch itself. A request
+object that is never dropped must not hang page A's navigation: the
+deadline, not the Drop, is the backstop.
+
+CANCEL: deny (explicit or timeout) cancels the network load via the
+existing path — `cancel_async_fetch(request_ids, …)`
+(`shared/net/lib.rs:1060`) — so bytes stop arriving.
+
 Backward compatibility falls out of Rust defaults: a trait method with
 a default no-op body compiles unchanged for every existing implementor
-(pane renderer, servoshell, probe), and the `Drop`-denies request
-object makes "no answer" mean "deny". The pane answers Deny in browse
+(pane renderer, servoshell, probe). The pane answers Deny in browse
 mode (recording it in `blocked`, like refusals today) and can later
 answer Allow(path) behind a user gesture.
 
@@ -90,6 +124,10 @@ never wants the bytes.
   conformance `/file` route): assert no navigation occurred (title
   unchanged, `#fill` present) and exactly one delegate call with the
   expected filename/MIME.
+- Timeout test: delegate never answers → denied at the deadline, page A
+  intact, fetch cancelled.
+- Iframe-attachment test: attachment navigation inside an iframe →
+  reported to the top-level webview's delegate with the frame URL.
 - Re-run pane conformance both arms: the 6 pivot/home rows get measured
   for the first time on the fork (they currently abort), and
   `browse-download-denied` must flip to pass.
