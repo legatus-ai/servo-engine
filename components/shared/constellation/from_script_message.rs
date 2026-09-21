@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSender, SendResult};
 use servo_base::id::{
-    BroadcastChannelRouterId, BrowsingContextId, HistoryStateId, MessagePortId,
+    BroadcastChannelRouterId, BrowsingContextId, DownloadId, HistoryStateId, MessagePortId,
     MessagePortRouterId, PipelineId, ScriptEventLoopId, ServiceWorkerId,
     ServiceWorkerRegistrationId, WebViewId,
 };
@@ -611,6 +611,20 @@ pub enum ConstellationInterest {
     StorageEvent,
 }
 
+/// A navigation response recognised as a download, reported by the script
+/// thread that parked it (row #9, Ref BRO-53). The constellation forwards
+/// it to the embedder and routes the answer back to the owning pipeline.
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+pub struct DownloadReport {
+    pub download_id: DownloadId,
+    pub pipeline_id: PipelineId,
+    pub url: ServoUrl,
+    pub frame_url: Option<ServoUrl>,
+    pub suggested_filename: Option<String>,
+    pub mime: Option<String>,
+    pub size_hint: Option<u64>,
+}
+
 /// Messages from the script to the constellation.
 #[derive(Deserialize, IntoStaticStr, Serialize)]
 pub enum ScriptToConstellationMessage {
@@ -826,6 +840,12 @@ pub enum ScriptToConstellationMessage {
     /// aggregate lock count and notify the provider only when the count transitions from N to 0.
     /// <https://w3c.github.io/screen-wake-lock/#dfn-release-wake-lock>
     ReleaseWakeLock(WakeLockType),
+    /// A navigation response is a download: ask the embedder, via the
+    /// constellation, whether to allow or deny it (row #9, Ref BRO-53).
+    /// The script thread parks the load until the answer comes back as
+    /// a download response message or its deadline expires; either way
+    /// page A is never torn down first.
+    ReportDownload(DownloadReport),
 }
 
 impl fmt::Debug for ScriptToConstellationMessage {

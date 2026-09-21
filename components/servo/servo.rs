@@ -810,6 +810,21 @@ impl ServoInner {
                     webview.request_create_new(response_sender);
                 }
             },
+            ConstellationToEmbedderMsg::RequestDownload(webview_id, report) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    let request = DownloadRequest {
+                        url: report.url.into_url(),
+                        frame_url: report.frame_url.map(|url| url.into_url()),
+                        suggested_filename: report.suggested_filename,
+                        mime: report.mime,
+                        size_hint: report.size_hint,
+                        download_id: report.download_id,
+                        constellation_proxy: self.constellation_proxy.clone(),
+                        response_sent: false,
+                    };
+                    webview.delegate().request_download(webview, request);
+                }
+            },
             ConstellationToEmbedderMsg::WebViewClosed(webview_id) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().notify_closed(webview);

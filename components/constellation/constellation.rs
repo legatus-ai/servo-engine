@@ -107,7 +107,8 @@ use devtools_traits::{
 use embedder_traits::resources::{self, Resource};
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
-    AnimationState, EmbedderControlId, EmbedderControlResponse, EmbedderProxy, FocusSequenceNumber,
+    AllowOrDeny, AnimationState, EmbedderControlId, EmbedderControlResponse, EmbedderProxy,
+    FocusSequenceNumber,
     GenericEmbedderProxy, InputEvent, InputEventAndId, InputEventOutcome, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
     MediaSessionEvent, MediaSessionPlaybackState, MouseButtonAction, MouseButtonEvent,
@@ -144,7 +145,7 @@ use servo_base::generic_channel::{
     GenericCallback, GenericSend, GenericSender, RoutedReceiver, SendError,
 };
 use servo_base::id::{
-    BrowsingContextGroupId, BrowsingContextId, CONSTELLATION_PIPELINE_NAMESPACE_ID,
+    BrowsingContextGroupId, BrowsingContextId, CONSTELLATION_PIPELINE_NAMESPACE_ID, DownloadId,
     FIRST_CONTENT_PIPELINE_NAMESPACE_ID, HistoryStateId, MessagePortId, MessagePortRouterId,
     PainterId, PipelineId, PipelineNamespace, PipelineNamespaceId, PipelineNamespaceRequest,
     ScriptEventLoopId, WebViewId,
@@ -158,7 +159,7 @@ use servo_canvas_traits::canvas::{CanvasId, CanvasMsg};
 use servo_config::{opts, pref};
 use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, AuxiliaryWebViewCreationResponse, ConstellationInterest,
-    EmbedderToConstellationMessage, HistoryTraversalSource, IFrameLoadInfo, IFrameLoadInfoWithData,
+    DownloadReport, EmbedderToConstellationMessage, HistoryTraversalSource, IFrameLoadInfo, IFrameLoadInfoWithData,
     IFrameSizeMsg, LoadData, LogEntry, MessagePortMsg, NavigationHistoryBehavior, PaintMetricEvent,
     PortMessageTask, PortTransferInfo, RemoteFocusOperation, SWManagerSenders,
     ScreenshotReadinessResponse, ScriptToConstellationMessage, ScrollStateUpdate,
@@ -463,6 +464,11 @@ pub struct Constellation<STF, SWF> {
     /// Navigation requests from script awaiting approval from the embedder.
     pending_approval_navigations: PendingApprovalNavigations,
 
+    /// Reported downloads awaiting the embedder's answer, by download id.
+    /// The owning pipeline id is kept alongside so answers route back to
+    /// the script thread that parked the load (row #9, Ref BRO-53).
+    pending_download_decisions: HashMap<DownloadId, PipelineId>,
+
     /// Bitmask which indicates which combination of mouse buttons are
     /// currently being pressed.
     pressed_mouse_buttons: MouseButtons,
@@ -718,6 +724,7 @@ where
                     webxr_registry: state.webxr_registry,
                     canvas: OnceCell::new(),
                     pending_approval_navigations: Default::default(),
+                    pending_download_decisions: Default::default(),
                     pressed_mouse_buttons: MouseButtons::empty(),
                     active_keyboard_modifiers: Modifiers::empty(),
                     hard_fail,
@@ -1308,6 +1315,9 @@ where
             },
             EmbedderToConstellationMessage::AllowNavigationResponse(pipeline_id, allowed) => {
                 self.handle_allow_navigation_response(pipeline_id, allowed);
+            },
+            EmbedderToConstellationMessage::DownloadResponse(download_id, decision) => {
+                self.handle_download_response(download_id, decision);
             },
             // Load a new page from a typed url
             // If there is already a pending page (self.pending_changes), it will not be overridden;
@@ -2059,6 +2069,9 @@ where
                         warn!("Failed to release screen wake lock: {e}");
                     }
                 },
+            },
+            ScriptToConstellationMessage::ReportDownload(report) => {
+                self.handle_report_download(report);
             },
         }
     }
@@ -4090,6 +4103,44 @@ where
                     load_data.url,
                 ),
             );
+        }
+    }
+
+    /// Perform a navigation previously requested by script, if approved by the embedder.
+    /// If there is already a pending page (self.pending_changes), it will not be overridden;
+    /// However, if the id is not encompassed by another change, it will be.
+    fn handle_report_download(&mut self, report: DownloadReport) {
+        let pipeline_id = report.pipeline_id;
+        let Some(pipeline) = self.pipelines.get(&pipeline_id) else {
+            return warn!("Download report for unknown pipeline {pipeline_id:?}");
+        };
+        let webview_id = pipeline.webview_id;
+        self.pending_download_decisions
+            .insert(report.download_id, pipeline_id);
+        self.constellation_to_embedder_proxy.send(
+            ConstellationToEmbedderMsg::RequestDownload(webview_id, report),
+        );
+    }
+
+    /// Route the embedder's download answer back to the script thread that
+    /// parked the load. Unknown ids (answered twice, or answered after the
+    /// pipeline closed) are dropped with a warning.
+    fn handle_download_response(&mut self, download_id: DownloadId, decision: AllowOrDeny) {
+        let Some(pipeline_id) = self.pending_download_decisions.remove(&download_id) else {
+            return warn!("Download answer for unknown download {download_id:?}");
+        };
+        let Some(pipeline) = self.pipelines.get(&pipeline_id) else {
+            return warn!("Download answer after pipeline closure {pipeline_id:?}");
+        };
+        if pipeline
+            .event_loop
+            .send(ScriptThreadMessage::DownloadResponse(
+                download_id,
+                decision,
+            ))
+            .is_err()
+        {
+            warn!("Could not send download answer to pipeline {pipeline_id:?}");
         }
     }
 
