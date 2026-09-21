@@ -26,7 +26,7 @@ a total that hides its denominator.
 | area | ours (legatus) | upstream Servo | Chrome stable | ours unexpected |
 |---|---|---|---|---|
 | css-flexbox | 3271/4753 (68.8%) | 3271/4753 (68.8%) | 4444/4480 (99.2%) | 2 FAIL |
-| css-grid | 7697/14788 (52.0%) | 6607/13426 (49.2%) | 12864/14345 (89.7%) | 1 unexpected-pass |
+| css-grid | 7723/14788 (52.2%) | 6607/13426 (49.2%) | 12864/14345 (89.7%) | 0 (v3 gate identity-proven) |
 | css-overflow | 597/1169 (51.1%) | 594/1180 (50.3%) | 1017/1112 (91.5%) | 16 |
 | css-text | 3235/4673 (69.2%) | 3235/4673 (69.2%) | 5022/5695 (88.2%) | 19 |
 | selectors (css/selectors) | 4006/6066 (66.0%) | 4007/6071 (66.0%) | 5087/6058 (84.0%) | 1 up-pass + 1 CRASH (has-complexity, reproduces solo) |
@@ -111,3 +111,10 @@ failing). Process count is not the variable; scope must still match
 exactly (solo-vs-full-dir differences are scope effects, and the
 zz-rects ERROR in one run was a deleted scratch file lingering in the
 local manifest, not signal).
+
+The css-grid "ours" column was then updated (7697→7723) from the
+grid-area abspos commit series, measured with the same a-priori
+check run in the opposite direction: worktree clean at the named
+commit, every diff hunk accounted applied-or-already-applied with
+zero FAILED hunks, binary newer than sources. +26 newly passing, 0
+newly failing. See `docs/grid-abspos-shape-v2.md`.
