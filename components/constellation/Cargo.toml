@@ -17,6 +17,9 @@ path = "lib.rs"
 default = []
 bluetooth = ["servo-bluetooth-traits"]
 gamepad = ["embedder_traits/gamepad"]
+# Row #10 test seam (Ref BRO-53): deterministic registration barrier plus
+# timeout override for integration tests. Never enabled in production builds.
+test-registration-gate = []
 tracing = ["dep:tracing", "servo-canvas/tracing"]
 multiprocess = []
 vello = ["servo-canvas/vello"]

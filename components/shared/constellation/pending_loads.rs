@@ -58,6 +58,14 @@ impl PendingLoads {
         self.inner.remove(&webview_id)
     }
 
+    /// Remove every parked load without reporting. Used on shutdown
+    /// (`handle_exit`), where the teardown would otherwise expire the
+    /// slots one by one and emit failure noise for loads that simply
+    /// never got a page.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
     /// Sweep past-due loads. Returned loads must surface as failures,
     /// never load.
     pub fn expired(&mut self, now: Instant) -> Vec<(WebViewId, PendingLoad)> {
@@ -131,6 +139,29 @@ mod tests {
         let replaced = table.insert(id, request("https://example.com/fresh"), Instant::now());
         let old = replaced.expect("replaced load must come back for the debug log");
         assert_eq!(old.request.url.as_str(), "https://example.com/stale");
+        let taken = table.take_for_registration(id).unwrap();
+        assert_eq!(taken.request.url.as_str(), "https://example.com/fresh");
+    }
+
+    #[test]
+    fn replacing_keeps_original_deadline() {
+        // Row 10 review: an embedder retrying more often than the bound
+        // must still see a failure — a replacement must not push the
+        // deadline out, or the silent loop from §7 never surfaces.
+        let mut table = PendingLoads::default();
+        let id = webview();
+        let first_deadline = Instant::now() + Duration::from_secs(30);
+        table.insert(
+            id,
+            request("https://example.com/stale"),
+            first_deadline,
+        );
+        table.insert(
+            id,
+            request("https://example.com/fresh"),
+            Instant::now() + Duration::from_secs(60),
+        );
+        assert_eq!(table.earliest_deadline(), Some(first_deadline));
         let taken = table.take_for_registration(id).unwrap();
         assert_eq!(taken.request.url.as_str(), "https://example.com/fresh");
     }

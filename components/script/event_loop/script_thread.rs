@@ -1363,9 +1363,9 @@ impl ScriptThread {
         // Receive at least one message so we don't spinloop.
         debug!("Waiting for event.");
         let fully_active = self.get_fully_active_document_ids();
-        // Row #10 (Ref BRO-53): while a download is parked, end the wait
-        // at its deadline so the deny fires even with no other traffic
-        // (shared mechanism with row #10's pending loads).
+        // Row #9 retrofit, shared mechanism with row #10's pending
+        // loads (Ref BRO-53): while a download is parked, end the wait
+        // at its deadline so the deny fires even with no other traffic.
         let parked_deadline = self
             .parked_downloads
             .borrow()

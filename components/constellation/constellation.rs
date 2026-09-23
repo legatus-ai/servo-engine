@@ -1332,6 +1332,19 @@ where
             #[cfg(not(feature = "multiprocess"))]
             Request::RemoveProcess(_) => {},
         }
+
+        // Row #10 (Ref BRO-53): the deadline wait only fires when the
+        // engine is idle. Under steady traffic a due load would
+        // otherwise slip its bound, so sweep after every handled
+        // request too. `earliest_deadline` is a min over at most one
+        // slot per webview, so the check is cheap when nothing is due.
+        if self
+            .pending_loads
+            .earliest_deadline()
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            self.expire_pending_loads();
+        }
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -2690,6 +2703,12 @@ where
         }
         self.shutting_down = true;
 
+        // Row #10 (Ref BRO-53): drop parked loads up front. The teardown
+        // below closes every context, which would otherwise remove or
+        // expire the slots one by one and emit `PendingLoadFailed` noise
+        // for loads that simply never got a page.
+        self.pending_loads.clear();
+
         self.mem_profiler_chan.send(mem::ProfilerMsg::Exit);
 
         // Tell all BHMs to exit, and to ensure their monitored components exit even when currently
@@ -3413,10 +3432,16 @@ where
             }
         }
 
-        // Row #10 (Ref BRO-53): a closed webview will never register, so
-        // a parked load for it fails visibly instead of lingering.
+        // Row #10 (Ref BRO-53): a closed webview will never register,
+        // so drop its parked slot. This is silent by design, not a
+        // `PendingLoadFailed`: `CloseWebView` is only ever sent from
+        // `WebViewInner::drop`, so no embedder handle remains that
+        // could receive the failure.
         if let Some(parked) = self.pending_loads.remove(webview_id) {
-            self.fail_pending_load(webview_id, parked, PendingLoadFailure::WebViewClosed);
+            debug!(
+                "{}: Dropping parked load {} for closed webview",
+                webview_id, parked.request.url,
+            );
         }
 
         // Step 4. Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
@@ -4186,6 +4211,8 @@ where
     /// Park a `LoadUrl` for a known-but-unregistered context (row #10,
     /// Ref BRO-53). Last-wins: a newer load replaces the parked one,
     /// logged at debug with both URLs so a trace shows the drop.
+    /// A superseded load is NOT reported to the embedder (note §5):
+    /// only the load in the slot can drain or fail visibly.
     fn park_load_until_registered(&mut self, webview_id: WebViewId, url_request: UrlRequest) {
         let new_url = url_request.url.clone();
         let deadline = Instant::now() + PENDING_LOAD_TIMEOUT;
