@@ -1363,10 +1363,20 @@ impl ScriptThread {
         // Receive at least one message so we don't spinloop.
         debug!("Waiting for event.");
         let fully_active = self.get_fully_active_document_ids();
+        // Row #10 (Ref BRO-53): while a download is parked, end the wait
+        // at its deadline so the deny fires even with no other traffic
+        // (shared mechanism with row #10's pending loads).
+        let parked_deadline = self
+            .parked_downloads
+            .borrow()
+            .values()
+            .map(|parked| parked.deadline)
+            .min();
         let mut event = self.receivers.recv(
             &self.task_queue,
             &self.timer_scheduler.borrow(),
             &fully_active,
+            parked_deadline,
         );
 
         loop {
@@ -4223,9 +4233,9 @@ impl ScriptThread {
     /// Deny parked downloads whose embedder deadline passed, cancelling
     /// their fetches and telling the constellation to drop the pending
     /// decision (so a late answer warns as unknown and never-answered
-    /// downloads stop accumulating). Runs every event-loop turn (live
-    /// downloads self-wake through their chunk messages); a fully idle
-    /// page with a holding embedder resolves on its next event.
+    /// downloads stop accumulating). Runs every event-loop turn, and the
+    /// wait itself ends at the earliest parked deadline (row #10 shared
+    /// mechanism), so the bound fires even on an otherwise idle page.
     fn deny_expired_downloads(&self) {
         let now = Instant::now();
         let expired: Vec<(DownloadId, WebViewId, PipelineId, RequestId)> = self

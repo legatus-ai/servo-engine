@@ -826,6 +826,13 @@ impl ServoInner {
                     webview.delegate().request_download(webview, request);
                 }
             },
+            ConstellationToEmbedderMsg::PendingLoadFailed(webview_id, servo_url, reason) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview
+                        .delegate()
+                        .notify_pending_load_failed(webview, servo_url.into_url(), reason);
+                }
+            },
             ConstellationToEmbedderMsg::WebViewClosed(webview_id) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().notify_closed(webview);
