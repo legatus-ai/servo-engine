@@ -207,6 +207,30 @@ type PendingApprovalNavigations = FxHashMap<PipelineId, PendingApprovalNavigatio
 /// the bound fires even on an otherwise idle engine.
 const PENDING_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Effective park bound. Integration tests shorten it through
+/// `SERVO_PENDING_LOAD_TIMEOUT_SECS`, honoured only in builds with the
+/// `test-registration-gate` cargo feature; feature builds without the
+/// variable use a short default so the expiry tests stay fast (the test
+/// helper reads the same variable with the same default — see
+/// `components/servo/tests/pending_load.rs`). Every other build,
+/// including production, always uses [`PENDING_LOAD_TIMEOUT`]. This is
+/// the injectable seam the review asked for: tests never wait 30 s, and
+/// no test hook exists outside the feature gate.
+fn pending_load_timeout() -> Duration {
+    #[cfg(feature = "test-registration-gate")]
+    if let Ok(secs) = std::env::var("SERVO_PENDING_LOAD_TIMEOUT_SECS") {
+        if let Ok(secs) = secs.parse::<u64>() {
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    #[cfg(feature = "test-registration-gate")]
+    return Duration::from_secs(5);
+    #[cfg(not(feature = "test-registration-gate"))]
+    PENDING_LOAD_TIMEOUT
+}
+
 #[derive(Debug)]
 /// The state used by MessagePortInfo to represent the various states the port can be in.
 enum TransferState {
@@ -1210,14 +1234,13 @@ where
         self.browsing_contexts
             .insert(browsing_context_id, browsing_context);
 
-        // Row #10 (Ref BRO-53): drain a LoadUrl parked while this
-        // top-level context was unregistered, through the same path as
-        // a direct load.
-        if parent_pipeline_id.is_none() {
-            if let Some(parked) = self.pending_loads.take_for_registration(webview_id) {
-                self.load_top_level_url(webview_id, parked.request);
-            }
-        }
+        // Row #10 (Ref BRO-53): the parked drain lives at the end of
+        // `handle_activate_document_msg`, after activity update and
+        // `HistoryChanged`. Registration itself is held open by the
+        // script-side gate (`registration_gate`, test feature only),
+        // which blocks the pipeline before `ActivateDocument` without
+        // stalling this thread, so `close()` and expiry still interleave
+        // with a held-open gap.
 
         // If this context is a nested container, attach it to parent pipeline.
         if let Some(parent_pipeline_id) = parent_pipeline_id &&
@@ -4215,7 +4238,7 @@ where
     /// only the load in the slot can drain or fail visibly.
     fn park_load_until_registered(&mut self, webview_id: WebViewId, url_request: UrlRequest) {
         let new_url = url_request.url.clone();
-        let deadline = Instant::now() + PENDING_LOAD_TIMEOUT;
+        let deadline = Instant::now() + pending_load_timeout();
         if let Some(replaced) = self
             .pending_loads
             .insert(webview_id, url_request, deadline)
@@ -5905,6 +5928,18 @@ where
                 &self.browsing_contexts,
                 &self.pipelines,
             );
+        }
+
+        // Row #10 (Ref BRO-53): commit a `LoadUrl` parked while this
+        // top-level context was unregistered. Deferred to the end of
+        // activation, after `change_session_history` (activity update,
+        // focus notify, `HistoryChanged`) and the screenshot-readiness
+        // requests, so the embedder sees the same order as for a direct
+        // load. `take` runs the drain at most once per webview.
+        if parent_pipeline_id.is_none() {
+            if let Some(parked) = self.pending_loads.take_for_registration(webview_id) {
+                self.load_top_level_url(webview_id, parked.request);
+            }
         }
     }
 

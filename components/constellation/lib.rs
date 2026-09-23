@@ -19,8 +19,6 @@ mod pipeline;
 mod process_manager;
 #[cfg(feature = "multiprocess")]
 mod sandboxing;
-#[cfg(feature = "test-registration-gate")]
-mod registration_gate;
 mod screenshot_readiness_request;
 mod serviceworker;
 mod session_history;
@@ -31,7 +29,5 @@ pub use crate::event_loop::EventLoop;
 #[cfg(feature = "multiprocess")]
 pub use crate::event_loop::NewScriptEventLoopProcessInfo;
 pub use crate::logging::{FromEmbedderLogger, FromScriptLogger};
-#[cfg(feature = "test-registration-gate")]
-pub use crate::registration_gate;
 #[cfg(feature = "multiprocess")]
 pub use crate::sandboxing::{UnprivilegedContent, content_process_sandbox_profile};

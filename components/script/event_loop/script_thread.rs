@@ -3731,6 +3731,15 @@ impl ScriptThread {
             );
         }
 
+        // Row #10 test seam (Ref BRO-53): while the registration gate
+        // is armed, block the pipeline here, before `ActivateDocument`,
+        // so a test holds registration open with the constellation
+        // thread free (`close()` and expiry still interleave with the
+        // held-open gap). Compiled in only with the
+        // `test-registration-gate` cargo feature.
+        #[cfg(feature = "test-registration-gate")]
+        crate::registration_gate::wait_if_armed();
+
         self.senders
             .pipeline_to_constellation_sender
             .send((

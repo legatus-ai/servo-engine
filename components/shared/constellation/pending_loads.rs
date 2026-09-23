@@ -36,14 +36,20 @@ impl PendingLoads {
         self.inner.is_empty()
     }
 
-    /// Park a load, replacing any earlier one. Returns the replaced
-    /// load so the caller can log both URLs at debug.
+    /// Park a load, replacing any earlier one. The replacement keeps the
+    /// ORIGINAL deadline: a fresh bound per replacement would let a
+    /// stuck page defer expiry forever under steady traffic.
+    /// Returns the replaced load so the caller can log both URLs at debug.
     pub fn insert(
         &mut self,
         webview_id: WebViewId,
         request: UrlRequest,
         deadline: Instant,
     ) -> Option<PendingLoad> {
+        let deadline = self
+            .inner
+            .get(&webview_id)
+            .map_or(deadline, |existing| existing.deadline);
         self.inner
             .insert(webview_id, PendingLoad { request, deadline })
     }
