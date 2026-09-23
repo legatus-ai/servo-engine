@@ -33,6 +33,7 @@ mod fetch;
 mod dom;
 pub(crate) use dom::canvas_context;
 mod drag;
+pub mod download_decision;
 mod engine;
 mod event_loop;
 mod runtime;

@@ -44,7 +44,7 @@ use devtools_traits::{
 };
 use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScript};
 use embedder_traits::{
-    EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
+    AllowOrDeny, EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
     InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
     Theme, ViewportDetails, WebDriverScriptCommand,
 };
@@ -68,7 +68,7 @@ use net_traits::request::{Referrer, RequestId};
 use net_traits::response::ResponseInit;
 use net_traits::{
     FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ResourceFetchTiming, ResourceThreads,
-    ResourceTimingType,
+    ResourceTimingType, cancel_async_fetch,
 };
 use paint_api::{CrossProcessPaintApi, PinchZoomInfos, PipelineExitSource};
 use percent_encoding::percent_decode;
@@ -85,7 +85,8 @@ use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{
-    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId, WebViewId,
+    BrowsingContextId, DownloadId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId,
+    WebViewId,
 };
 use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 use servo_base::{Epoch, generic_channel};
@@ -94,8 +95,8 @@ use servo_canvas_traits::webgl::WebGLPipeline;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::{pref, prefs};
 use servo_constellation_traits::{
-    HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
-    RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
+    DownloadReport, HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior,
+    PaintMetricEvent, RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
     ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
     StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
 };
@@ -261,6 +262,24 @@ impl Default for SharedRwLocks {
     }
 }
 
+/// How long a parked download waits for the embedder's answer before the
+/// script thread denies it itself (row #9, Ref BRO-53). Generous: the pane
+/// answers synchronously in practice (it does not implement the method, so
+/// the request drops straight to deny); the deadline only binds an
+/// embedder that holds the request and never answers.
+const DOWNLOAD_DECISION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A navigation response recognised as a download, parked while the
+/// embedder answers. No document is created, no history commits, and the
+/// body is not consumed; deny (explicit, timeout, or dropped request)
+/// cancels the fetch and the page is never torn down.
+struct ParkedDownload {
+    pipeline_id: PipelineId,
+    webview_id: WebViewId,
+    request_id: RequestId,
+    deadline: Instant,
+}
+
 #[derive(JSTraceable)]
 // ScriptThread instances are rooted on creation, so this is okay
 #[cfg_attr(crown, expect(crown::unrooted_must_root))]
@@ -279,6 +298,12 @@ pub struct ScriptThread {
     window_proxies: Rc<ScriptWindowProxies>,
     /// A list of data pertaining to loads that have not yet received a network response
     incomplete_loads: DomRefCell<Vec<InProgressLoad>>,
+    /// Navigation responses recognised as downloads, parked while the
+    /// embedder answers (row #9, Ref BRO-53). No document is created and
+    /// no history commits until the answer arrives or the deadline below
+    /// expires; either way the previous page is never torn down first.
+    #[no_trace]
+    parked_downloads: RefCell<FxHashMap<DownloadId, ParkedDownload>>,
     /// A vector containing parser contexts which have not yet been fully processed
     incomplete_parser_contexts: IncompleteParserContexts,
     /// An [`ImageCacheFactory`] to use for creating [`ImageCache`]s for all of the
@@ -915,6 +940,7 @@ impl ScriptThread {
                     last_render_opportunity_time: Default::default(),
                     window_proxies: Default::default(),
                     incomplete_loads: DomRefCell::new(vec![]),
+                    parked_downloads: Default::default(),
                     incomplete_parser_contexts: IncompleteParserContexts(RefCell::new(vec![])),
                     senders,
                     receivers,
@@ -1324,6 +1350,10 @@ impl ScriptThread {
 
     /// Handle incoming messages from other tasks and the task queue.
     fn handle_msgs(&self, cx: &mut js::context::JSContext) -> bool {
+        // Row #9 (Ref BRO-53): deny parked downloads past their embedder
+        // deadline. Live downloads self-wake through their chunk messages;
+        // this sweep covers every turn in between.
+        self.deny_expired_downloads();
         // Proritize rendering tasks and others, and gather all other events as `sequential`.
         let mut sequential: SmallVec<[MixedMessage; 10]> = SmallVec::new();
 
@@ -1922,6 +1952,9 @@ impl ScriptThread {
             },
             ScriptThreadMessage::TriggerGarbageCollection => unsafe {
                 JS_GC(cx, GCReason::API);
+            },
+            ScriptThreadMessage::DownloadResponse(download_id, decision) => {
+                self.handle_download_response(download_id, decision);
             },
         }
     }
@@ -4039,13 +4072,22 @@ impl ScriptThread {
         };
 
         match message {
-            FetchResponseMsg::ProcessResponse(_request_id, metadata) => {
-                self.handle_fetch_metadata(cx, pipeline_id, metadata)
+            FetchResponseMsg::ProcessResponse(request_id, metadata) => {
+                self.handle_fetch_metadata(cx, pipeline_id, request_id, metadata)
             },
             FetchResponseMsg::ProcessResponseChunk(_request_id, chunk) => {
+                // Row #9 (Ref BRO-53): body bytes for a parked download are
+                // dropped, never fed to a parser — Allow is out of scope,
+                // so no bytes ever need keeping.
+                if self.is_download_parked(pipeline_id) {
+                    return;
+                }
                 self.handle_fetch_chunk(cx, pipeline_id, chunk)
             },
             FetchResponseMsg::ProcessResponseEOF(_request_id, eof, timing) => {
+                if self.is_download_parked(pipeline_id) {
+                    return;
+                }
                 self.handle_fetch_eof(cx, pipeline_id, eof, timing)
             },
             FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
@@ -4060,6 +4102,7 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         id: PipelineId,
+        request_id: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         match fetch_metadata {
@@ -4070,6 +4113,16 @@ impl ScriptThread {
             },
         };
 
+        // Row #9 (Ref BRO-53): recognise downloads before any document
+        // work. This only fires for navigation (document) loads — never
+        // subresources — and either parks the load for the embedder's
+        // answer or proceeds untouched.
+        if let Ok(FetchMetadata::Unfiltered(metadata)) = &fetch_metadata {
+            if self.park_download_if_needed(id, request_id, metadata) {
+                return;
+            }
+        }
+
         let mut incomplete_parser_contexts = self.incomplete_parser_contexts.0.borrow_mut();
         let parser = incomplete_parser_contexts
             .iter_mut()
@@ -4077,6 +4130,147 @@ impl ScriptThread {
         if let Some(&mut (_, ref mut ctxt)) = parser {
             ctxt.process_response(self, cx, fetch_metadata);
         }
+    }
+
+    /// Recognise a navigation response as a download and park it for the
+    /// embedder's answer (row #9, Ref BRO-53). Returns true when parked
+    /// (the caller must not create any document); false to proceed.
+    /// Page A is never torn down first: no parser context is touched here.
+    fn park_download_if_needed(
+        &self,
+        pipeline_id: PipelineId,
+        request_id: RequestId,
+        metadata: &Metadata,
+    ) -> bool {
+        use crate::download_decision::{DownloadIntent, recognise_download};
+
+        let headers = metadata.headers.as_ref().map(|headers| &headers.0);
+        let disposition = headers
+            .and_then(|headers| headers.get("content-disposition"))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let essence = metadata
+            .content_type
+            .as_ref()
+            .map(|content_type| {
+                let mime = data_url::mime::Mime::from_ct(content_type.0.clone());
+                format!("{}/{}", mime.type_, mime.subtype)
+            })
+            .unwrap_or_default();
+        // TODO(row #9 follow-up): thread the `<a download>` flag from
+        // `follow_hyperlink` (currently an unimplemented upstream TODO)
+        // through here instead of `false`.
+        let anchor_download = false;
+        let DownloadIntent::Download { filename } =
+            recognise_download(disposition.as_deref(), anchor_download, &essence, true)
+        else {
+            return false;
+        };
+        let size_hint = headers
+            .and_then(|headers| headers.get("content-length"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let documents = self.documents.borrow();
+        let (webview_id, frame_url) = match documents.find_window(pipeline_id) {
+            Some(window) => {
+                let frame_url = documents
+                    .find_document(pipeline_id)
+                    .map(|document| document.url());
+                (window.webview_id(), frame_url)
+            },
+            None => return false,
+        };
+        drop(documents);
+        let download_id = DownloadId::default();
+        self.parked_downloads.borrow_mut().insert(
+            download_id,
+            ParkedDownload {
+                pipeline_id,
+                webview_id,
+                request_id,
+                deadline: Instant::now() + DOWNLOAD_DECISION_TIMEOUT,
+            },
+        );
+        let report = DownloadReport {
+            download_id,
+            pipeline_id,
+            url: metadata.final_url.clone(),
+            frame_url,
+            suggested_filename: filename,
+            mime: Some(essence),
+            size_hint,
+        };
+        self.senders
+            .pipeline_to_constellation_sender
+            .send((
+                webview_id,
+                pipeline_id,
+                ScriptToConstellationMessage::ReportDownload(report),
+            ))
+            .unwrap();
+        true
+    }
+
+    /// Whether this pipeline has a navigation response parked as a
+    /// download awaiting the embedder (row #9, Ref BRO-53).
+    fn is_download_parked(&self, pipeline_id: PipelineId) -> bool {
+        self.parked_downloads
+            .borrow()
+            .values()
+            .any(|parked| parked.pipeline_id == pipeline_id)
+    }
+
+    /// Deny parked downloads whose embedder deadline passed, cancelling
+    /// their fetches and telling the constellation to drop the pending
+    /// decision (so a late answer warns as unknown and never-answered
+    /// downloads stop accumulating). Runs every event-loop turn (live
+    /// downloads self-wake through their chunk messages); a fully idle
+    /// page with a holding embedder resolves on its next event.
+    fn deny_expired_downloads(&self) {
+        let now = Instant::now();
+        let expired: Vec<(DownloadId, WebViewId, PipelineId, RequestId)> = self
+            .parked_downloads
+            .borrow()
+            .iter()
+            .filter(|(_, parked)| parked.deadline <= now)
+            .map(|(id, parked)| {
+                (
+                    *id,
+                    parked.webview_id,
+                    parked.pipeline_id,
+                    parked.request_id,
+                )
+            })
+            .collect();
+        for (download_id, webview_id, pipeline_id, request_id) in expired {
+            self.parked_downloads.borrow_mut().remove(&download_id);
+            cancel_async_fetch(vec![request_id], &self.resource_threads.core_thread);
+            let _ = self
+                .senders
+                .pipeline_to_constellation_sender
+                .send((
+                    webview_id,
+                    pipeline_id,
+                    ScriptToConstellationMessage::CancelDownload(download_id),
+                ));
+        }
+    }
+
+    /// Apply the embedder's download answer. Deny (or allow, until file
+    /// writing lands) cancels the parked fetch; page A was never touched.
+    fn handle_download_response(&self, download_id: DownloadId, decision: AllowOrDeny) {
+        let parked = self.parked_downloads.borrow_mut().remove(&download_id);
+        let Some(parked) = parked else {
+            return;
+        };
+        if decision == AllowOrDeny::Allow {
+            warn!("Download allow is not implemented yet; treating as deny");
+        }
+        cancel_async_fetch(
+            vec![parked.request_id],
+            &self.resource_threads.core_thread,
+        );
+        let _ = parked.pipeline_id;
     }
 
     fn handle_fetch_chunk(

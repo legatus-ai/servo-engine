@@ -8,6 +8,7 @@ use embedder_traits::{
 };
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{PipelineId, WebViewId};
+use servo_constellation_traits::DownloadReport;
 use servo_url::ServoUrl;
 
 /// Messages sent from the `Constellation` to the embedder.
@@ -43,6 +44,10 @@ pub enum ConstellationToEmbedderMsg {
     AllowOpeningWebView(WebViewId, GenericSender<Option<NewWebViewDetails>>),
     /// Whether or not to allow a pipeline to load a url.
     AllowNavigationRequest(WebViewId, PipelineId, ServoUrl),
+    /// A navigation response is a download: ask the embedder whether to
+    /// allow or deny it (row #9, Ref BRO-53). Answered via
+    /// [`EmbedderToConstellationMessage::DownloadResponse`].
+    RequestDownload(WebViewId, DownloadReport),
     /// The history state has changed.
     HistoryChanged(WebViewId, Vec<ServoUrl>, usize),
 }

@@ -18,9 +18,9 @@ use embedder_traits::user_contents::{
     UserContentManagerId, UserScript, UserScriptId, UserStyleSheet, UserStyleSheetId,
 };
 use embedder_traits::{
-    EmbedderControlId, EmbedderControlResponse, InputEventAndId, JavaScriptEvaluationId,
-    MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme, TraversalId, UrlRequest,
-    ViewportDetails, WebDriverCommandMsg,
+    AllowOrDeny, EmbedderControlId, EmbedderControlResponse, InputEventAndId,
+    JavaScriptEvaluationId, MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme,
+    TraversalId, UrlRequest, ViewportDetails, WebDriverCommandMsg,
 };
 pub use from_script_message::*;
 use malloc_size_of_derive::MallocSizeOf;
@@ -30,7 +30,7 @@ use profile_traits::mem::MemoryReportResult;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericCallback;
-use servo_base::id::{LCPCandidateID, MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
+use servo_base::id::{DownloadId, LCPCandidateID, MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
 use servo_config::prefs::PrefValue;
 use servo_url::{ImmutableOrigin, ServoUrl};
 pub use structured_data::*;
@@ -46,6 +46,10 @@ pub enum EmbedderToConstellationMessage {
     Exit,
     /// Whether to allow script to navigate.
     AllowNavigationResponse(PipelineId, bool),
+    /// The embedder's answer to a reported download (row #9, Ref BRO-53).
+    /// Allow is accepted but treated as denied until file writing lands;
+    /// deny (or a dropped request, which denies) cancels the load.
+    DownloadResponse(DownloadId, AllowOrDeny),
     /// Request to load a page, with optionally additional data in [`URLRequest`].
     LoadUrl(WebViewId, UrlRequest),
     /// Request to traverse the joint session history of the provided browsing context.
