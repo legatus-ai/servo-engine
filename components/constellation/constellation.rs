@@ -2073,6 +2073,9 @@ where
             ScriptToConstellationMessage::ReportDownload(report) => {
                 self.handle_report_download(report);
             },
+            ScriptToConstellationMessage::CancelDownload(download_id) => {
+                self.pending_download_decisions.remove(&download_id);
+            },
         }
     }
 
@@ -2977,6 +2980,12 @@ where
             set.remove(&pipeline_id);
             !set.is_empty()
         });
+
+        // Drop download decisions parked for this pipeline (row #9,
+        // Ref BRO-53): a late embedder answer warns as unknown instead of
+        // routing nowhere.
+        self.pending_download_decisions
+            .retain(|_, owner| *owner != pipeline_id);
 
         // Now that the Script and Constellation parts of Servo no longer have a reference to
         // this pipeline, tell `Paint` that it has shut down. This is delayed until the
@@ -4106,9 +4115,10 @@ where
         }
     }
 
-    /// Perform a navigation previously requested by script, if approved by the embedder.
-    /// If there is already a pending page (self.pending_changes), it will not be overridden;
-    /// However, if the id is not encompassed by another change, it will be.
+    /// Forward a script-reported download to the embedder for its answer,
+    /// keeping the decision open in [`Self::pending_download_decisions`]
+    /// until the answer routes back, the script thread times out, or the
+    /// pipeline exits (row #9, Ref BRO-53).
     fn handle_report_download(&mut self, report: DownloadReport) {
         let pipeline_id = report.pipeline_id;
         let Some(pipeline) = self.pipelines.get(&pipeline_id) else {

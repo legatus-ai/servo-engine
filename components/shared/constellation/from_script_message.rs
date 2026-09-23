@@ -846,6 +846,12 @@ pub enum ScriptToConstellationMessage {
     /// a download response message or its deadline expires; either way
     /// page A is never torn down first.
     ReportDownload(DownloadReport),
+    /// The script thread denied a parked download itself after the
+    /// embedder deadline expired (row #9, Ref BRO-53). The constellation
+    /// drops the pending decision so a late embedder answer warns as
+    /// unknown instead of routing nowhere, and never-answered downloads
+    /// stop accumulating.
+    CancelDownload(DownloadId),
 }
 
 impl fmt::Debug for ScriptToConstellationMessage {

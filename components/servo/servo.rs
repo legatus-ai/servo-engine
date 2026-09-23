@@ -109,8 +109,9 @@ use crate::servo_delegate::{DefaultServoDelegate, ServoDelegate, ServoError};
 use crate::site_data_manager::{CookieOperationResponse, SiteDataManager};
 use crate::webview::{MINIMUM_WEBVIEW_SIZE, WebView, WebViewInner};
 use crate::webview_delegate::{
-    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, EmbedderControl,
-    FilePicker, NavigationRequest, PermissionRequest, ProtocolHandlerRegistration, WebResourceLoad,
+    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, DownloadRequest,
+    EmbedderControl, FilePicker, NavigationRequest, PermissionRequest, ProtocolHandlerRegistration,
+    WebResourceLoad,
 };
 
 #[cfg(feature = "media-gstreamer")]

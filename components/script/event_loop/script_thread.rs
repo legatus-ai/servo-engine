@@ -275,6 +275,7 @@ const DOWNLOAD_DECISION_TIMEOUT: Duration = Duration::from_secs(10);
 /// cancels the fetch and the page is never torn down.
 struct ParkedDownload {
     pipeline_id: PipelineId,
+    webview_id: WebViewId,
     request_id: RequestId,
     deadline: Instant,
 }
@@ -4075,9 +4076,18 @@ impl ScriptThread {
                 self.handle_fetch_metadata(cx, pipeline_id, request_id, metadata)
             },
             FetchResponseMsg::ProcessResponseChunk(_request_id, chunk) => {
+                // Row #9 (Ref BRO-53): body bytes for a parked download are
+                // dropped, never fed to a parser — Allow is out of scope,
+                // so no bytes ever need keeping.
+                if self.is_download_parked(pipeline_id) {
+                    return;
+                }
                 self.handle_fetch_chunk(cx, pipeline_id, chunk)
             },
             FetchResponseMsg::ProcessResponseEOF(_request_id, eof, timing) => {
+                if self.is_download_parked(pipeline_id) {
+                    return;
+                }
                 self.handle_fetch_eof(cx, pipeline_id, eof, timing)
             },
             FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
@@ -4176,6 +4186,7 @@ impl ScriptThread {
             download_id,
             ParkedDownload {
                 pipeline_id,
+                webview_id,
                 request_id,
                 deadline: Instant::now() + DOWNLOAD_DECISION_TIMEOUT,
             },
@@ -4200,25 +4211,48 @@ impl ScriptThread {
         true
     }
 
+    /// Whether this pipeline has a navigation response parked as a
+    /// download awaiting the embedder (row #9, Ref BRO-53).
+    fn is_download_parked(&self, pipeline_id: PipelineId) -> bool {
+        self.parked_downloads
+            .borrow()
+            .values()
+            .any(|parked| parked.pipeline_id == pipeline_id)
+    }
+
     /// Deny parked downloads whose embedder deadline passed, cancelling
-    /// their fetches. Runs every event-loop turn (live downloads self-wake
-    /// through their chunk messages); a fully idle page with a holding
-    /// embedder resolves on its next event.
+    /// their fetches and telling the constellation to drop the pending
+    /// decision (so a late answer warns as unknown and never-answered
+    /// downloads stop accumulating). Runs every event-loop turn (live
+    /// downloads self-wake through their chunk messages); a fully idle
+    /// page with a holding embedder resolves on its next event.
     fn deny_expired_downloads(&self) {
         let now = Instant::now();
-        let expired: Vec<(DownloadId, RequestId)> = self
+        let expired: Vec<(DownloadId, WebViewId, PipelineId, RequestId)> = self
             .parked_downloads
             .borrow()
             .iter()
             .filter(|(_, parked)| parked.deadline <= now)
-            .map(|(id, parked)| (*id, parked.request_id))
+            .map(|(id, parked)| {
+                (
+                    *id,
+                    parked.webview_id,
+                    parked.pipeline_id,
+                    parked.request_id,
+                )
+            })
             .collect();
-        for (download_id, request_id) in expired {
+        for (download_id, webview_id, pipeline_id, request_id) in expired {
             self.parked_downloads.borrow_mut().remove(&download_id);
-            cancel_async_fetch(
-                vec![request_id],
-                &self.resource_threads.core_thread,
-            );
+            cancel_async_fetch(vec![request_id], &self.resource_threads.core_thread);
+            let _ = self
+                .senders
+                .pipeline_to_constellation_sender
+                .send((
+                    webview_id,
+                    pipeline_id,
+                    ScriptToConstellationMessage::CancelDownload(download_id),
+                ));
         }
     }
 
