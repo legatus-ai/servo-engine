@@ -1252,10 +1252,9 @@ where
         // being called. If this happens, there's not much we can do
         // other than panic.
         //
-        // Row #10 (Ref BRO-53): the whole select lives in its own
-        // scope and yields an owned request, so that a deadline-wait
-        // timeout drops every channel borrow before the expiry sweep
-        // below takes `&mut`.
+        // Row #10 (Ref BRO-53): the select lives in its own scope
+        // and yields an owned request, so that every channel borrow
+        // ends before the expiry sweep below takes `&mut`.
         let maybe_request = {
             let _span = profile_traits::trace_span!("handle_request::select").entered();
             let mut sel = Select::new();
@@ -1271,51 +1270,48 @@ where
             // fires even with no other traffic; on timeout there is no
             // operation to receive from.
             let oper = match self.pending_loads.earliest_deadline() {
-                Some(deadline) => match sel.select_deadline(deadline) {
-                    Ok(oper) => Some(oper),
-                    Err(_) => None,
-                },
+                Some(deadline) => sel.select_deadline(deadline).ok(),
                 None => Some(sel.select()),
             };
-            let oper = match oper {
-                Some(oper) => oper,
-                None => {
-                    // Deadline-wait wake with no traffic: sweep past-due
-                    // parked loads, then loop (row #10, Ref BRO-53).
-                    self.expire_pending_loads();
-                    return;
-                },
-            };
-            let index = oper.index();
-
-            Some(match index {
-                0 => oper
-                    .recv(&self.namespace_receiver)
-                    .expect("Unexpected script channel panic in constellation")
-                    .map(Request::PipelineNamespace),
-                1 => oper
-                    .recv(&self.script_receiver)
-                    .expect("Unexpected script channel panic in constellation")
-                    .map(Request::Script),
-                2 => oper
-                    .recv(&self.background_hang_monitor_receiver)
-                    .expect("Unexpected BHM channel panic in constellation")
-                    .map(Request::BackgroundHangMonitor),
-                3 => Ok(Request::Embedder(
-                    oper.recv(&self.embedder_to_constellation_receiver)
-                        .expect("Unexpected embedder channel panic in constellation"),
-                )),
-                _ => {
-                    // This can only be a error reading on a closed lifeline receiver.
-                    let process_index = index - 4;
-                    #[cfg(feature = "multiprocess")]
-                    let _ = oper.recv(self.process_manager.receiver_at(process_index));
-                    Ok(Request::RemoveProcess(process_index))
-                },
-            }
+            oper.map(|oper| {
+                let index = oper.index();
+                match index {
+                    0 => oper
+                        .recv(&self.namespace_receiver)
+                        .expect("Unexpected script channel panic in constellation")
+                        .map(Request::PipelineNamespace),
+                    1 => oper
+                        .recv(&self.script_receiver)
+                        .expect("Unexpected script channel panic in constellation")
+                        .map(Request::Script),
+                    2 => oper
+                        .recv(&self.background_hang_monitor_receiver)
+                        .expect("Unexpected BHM channel panic in constellation")
+                        .map(Request::BackgroundHangMonitor),
+                    3 => Ok(Request::Embedder(
+                        oper.recv(&self.embedder_to_constellation_receiver)
+                            .expect("Unexpected embedder channel panic in constellation"),
+                    )),
+                    _ => {
+                        // This can only be a error reading on a closed lifeline receiver.
+                        let process_index = index - 4;
+                        #[cfg(feature = "multiprocess")]
+                        let _ = oper.recv(self.process_manager.receiver_at(process_index));
+                        Ok(Request::RemoveProcess(process_index))
+                    },
+                }
+            })
+            // `sel` and the selected operation drop here; the receiver
+            // borrows end before the sweep below.
         };
 
-        let request = match maybe_request {
+        let Some(request) = maybe_request else {
+            // Deadline-wait wake with no traffic: sweep past-due parked
+            // loads, then loop (row #10, Ref BRO-53).
+            self.expire_pending_loads();
+            return;
+        };
+        let request = match request {
             Ok(request) => request,
             Err(err) => return error!("Deserialization failed ({}).", err),
         };
