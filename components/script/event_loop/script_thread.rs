@@ -4157,10 +4157,38 @@ impl ScriptThread {
                 format!("{}/{}", mime.type_, mime.subtype)
             })
             .unwrap_or_default();
-        // TODO(row #9 follow-up): thread the `<a download>` flag from
-        // `follow_hyperlink` (currently an unimplemented upstream TODO)
-        // through here instead of `false`.
-        let anchor_download = false;
+        // Row #9b (Ref BRO-53): resolve the navigation context first.
+        // Same-pipeline loads have a live window; hyperlink navigations
+        // fetch into a NEW pipeline with no window yet, so the live lookup
+        // always misses for them — fall back to the in-progress load,
+        // which carries the webview, the referrer (page A) and the `<a
+        // download>` flag threaded from `follow_hyperlink`.
+        let documents = self.documents.borrow();
+        let live_context = documents.find_window(pipeline_id).map(|window| {
+            let frame_url = documents
+                .find_document(pipeline_id)
+                .map(|document| document.url());
+            (window.webview_id(), frame_url, false)
+        });
+        drop(documents);
+        let (webview_id, frame_url, anchor_download) = match live_context {
+            Some(context) => context,
+            None => {
+                let loads = self.incomplete_loads.borrow();
+                let Some(load) = loads.iter().find(|load| load.pipeline_id == pipeline_id) else {
+                    return false;
+                };
+                let frame_url = match &load.load_data.referrer {
+                    Referrer::Client(url) | Referrer::ReferrerUrl(url) => Some(url.clone()),
+                    Referrer::NoReferrer => None,
+                };
+                (
+                    load.webview_id,
+                    frame_url,
+                    load.load_data.anchor_download,
+                )
+            },
+        };
         let DownloadIntent::Download { filename } =
             recognise_download(disposition.as_deref(), anchor_download, &essence, true)
         else {
@@ -4170,17 +4198,6 @@ impl ScriptThread {
             .and_then(|headers| headers.get("content-length"))
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
-        let documents = self.documents.borrow();
-        let (webview_id, frame_url) = match documents.find_window(pipeline_id) {
-            Some(window) => {
-                let frame_url = documents
-                    .find_document(pipeline_id)
-                    .map(|document| document.url());
-                (window.webview_id(), frame_url)
-            },
-            None => return false,
-        };
-        drop(documents);
         let download_id = DownloadId::default();
         self.parked_downloads.borrow_mut().insert(
             download_id,
