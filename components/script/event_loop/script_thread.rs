@@ -4116,9 +4116,11 @@ impl ScriptThread {
         // Row #9 (Ref BRO-53): recognise downloads before any document
         // work. This only fires for navigation (document) loads — never
         // subresources — and either parks the load for the embedder's
-        // answer or proceeds untouched.
-        if let Ok(FetchMetadata::Unfiltered(metadata)) = &fetch_metadata {
-            if self.park_download_if_needed(id, request_id, metadata) {
+        // answer or proceeds untouched. Row #9b: real HTTP navigations
+        // arrive as `Filtered` (Basic tainting), never `Unfiltered`, so
+        // the decision must run on the full metadata of either variant.
+        if let Ok(metadata) = &fetch_metadata {
+            if self.park_download_if_needed(id, request_id, metadata.metadata()) {
                 return;
             }
         }
