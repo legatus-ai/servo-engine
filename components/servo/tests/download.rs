@@ -141,88 +141,80 @@ fn click(servo_test: &ServoTest, webview: &WebView, id: &str) {
     .expect("click script runs");
 }
 
+/// All three download scenarios in ONE test: `Servo::new` initializes the
+/// process-global `Opts` exactly once, so a second `ServoTest::new` in the
+/// same binary panics with "Already initialized". One `Servo` instance
+/// serves all scenarios; each gets a fresh delegate, server-side paths
+/// are shared, and each scenario builds its own `WebView`.
+///
 /// The r27 case: `<a download>` to an attachment octet-stream.
 /// The page must be kept and `request_download` must fire with the
 /// attachment's filename.
 #[test]
-fn anchor_download_attribute_with_attachment_headers_downloads() {
+fn hyperlink_downloads_park_and_report() {
     let servo_test = ServoTest::new();
-    let delegate = Rc::new(RecordingDelegate::default());
     let (server, page) = serve_test_site();
-    let webview = build_page(&servo_test, delegate.clone(), &page);
 
-    click(&servo_test, &webview, "dl");
+    // Scenario 1: attribute alone triggers — `<a download>` to a
+    // same-origin non-attachment response is a download, not a navigation.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "dl-text");
+        spin_until(
+            &servo_test,
+            "download request",
+            Duration::from_secs(30),
+            || download_count(&delegate) > 0,
+        );
+        let downloads = delegate.downloads.borrow();
+        assert_eq!(downloads.len(), 1);
+        assert!(downloads[0].0.as_str().ends_with("/notes"));
+        assert_eq!(downloads[0].1, None);
+        assert_eq!(history_len(&delegate), 1);
+        assert_eq!(webview.url().as_ref(), Some(&page));
+    }
 
-    spin_until(
-        &servo_test,
-        "download request",
-        Duration::from_secs(30),
-        || download_count(&delegate) > 0,
-    );
+    // Scenario 2: the r27 case — `<a download>` to an attachment
+    // octet-stream keeps the page and reports the attachment filename.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "dl");
+        spin_until(
+            &servo_test,
+            "download request",
+            Duration::from_secs(30),
+            || download_count(&delegate) > 0,
+        );
+        let downloads = delegate.downloads.borrow();
+        assert_eq!(downloads.len(), 1);
+        assert!(downloads[0].0.as_str().ends_with("/file"));
+        assert_eq!(downloads[0].1.as_deref(), Some("report.bin"));
+        // The page is kept: exactly the initial commit, still on the page.
+        assert_eq!(history_len(&delegate), 1);
+        assert_eq!(webview.url().as_ref(), Some(&page));
+    }
 
-    let downloads = delegate.downloads.borrow();
-    assert_eq!(downloads.len(), 1);
-    assert!(downloads[0].0.as_str().ends_with("/file"));
-    assert_eq!(downloads[0].1.as_deref(), Some("report.bin"));
-    // The page is kept: exactly the initial commit, still on the page.
-    assert_eq!(history_len(&delegate), 1);
-    assert_eq!(webview.url().as_ref(), Some(&page));
-
-    let _ = server.close();
-}
-
-/// Header alone triggers: a plain link (no `download` attribute) to an
-/// attachment response is still a download, not a navigation.
-#[test]
-fn plain_link_to_attachment_headers_downloads() {
-    let servo_test = ServoTest::new();
-    let delegate = Rc::new(RecordingDelegate::default());
-    let (server, page) = serve_test_site();
-    let webview = build_page(&servo_test, delegate.clone(), &page);
-
-    click(&servo_test, &webview, "plain");
-
-    spin_until(
-        &servo_test,
-        "download request",
-        Duration::from_secs(30),
-        || download_count(&delegate) > 0,
-    );
-
-    let downloads = delegate.downloads.borrow();
-    assert_eq!(downloads.len(), 1);
-    assert!(downloads[0].0.as_str().ends_with("/file"));
-    assert_eq!(downloads[0].1.as_deref(), Some("report.bin"));
-    assert_eq!(history_len(&delegate), 1);
-    assert_eq!(webview.url().as_ref(), Some(&page));
-
-    let _ = server.close();
-}
-
-/// Attribute alone triggers: `<a download>` to a same-origin
-/// non-attachment response is a download, not a navigation.
-#[test]
-fn anchor_download_attribute_to_plain_response_downloads() {
-    let servo_test = ServoTest::new();
-    let delegate = Rc::new(RecordingDelegate::default());
-    let (server, page) = serve_test_site();
-    let webview = build_page(&servo_test, delegate.clone(), &page);
-
-    click(&servo_test, &webview, "dl-text");
-
-    spin_until(
-        &servo_test,
-        "download request",
-        Duration::from_secs(30),
-        || download_count(&delegate) > 0,
-    );
-
-    let downloads = delegate.downloads.borrow();
-    assert_eq!(downloads.len(), 1);
-    assert!(downloads[0].0.as_str().ends_with("/notes"));
-    assert_eq!(downloads[0].1, None);
-    assert_eq!(history_len(&delegate), 1);
-    assert_eq!(webview.url().as_ref(), Some(&page));
+    // Scenario 3: header alone triggers — a plain link (no `download`
+    // attribute) to an attachment response is still a download.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "plain");
+        spin_until(
+            &servo_test,
+            "download request",
+            Duration::from_secs(30),
+            || download_count(&delegate) > 0,
+        );
+        let downloads = delegate.downloads.borrow();
+        assert_eq!(downloads.len(), 1);
+        assert!(downloads[0].0.as_str().ends_with("/file"));
+        assert_eq!(downloads[0].1.as_deref(), Some("report.bin"));
+        assert_eq!(history_len(&delegate), 1);
+        assert_eq!(webview.url().as_ref(), Some(&page));
+    }
 
     let _ = server.close();
 }
