@@ -109,8 +109,9 @@ use crate::servo_delegate::{DefaultServoDelegate, ServoDelegate, ServoError};
 use crate::site_data_manager::{CookieOperationResponse, SiteDataManager};
 use crate::webview::{MINIMUM_WEBVIEW_SIZE, WebView, WebViewInner};
 use crate::webview_delegate::{
-    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, EmbedderControl,
-    FilePicker, NavigationRequest, PermissionRequest, ProtocolHandlerRegistration, WebResourceLoad,
+    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, DownloadRequest,
+    EmbedderControl, FilePicker, NavigationRequest, PermissionRequest, ProtocolHandlerRegistration,
+    WebResourceLoad,
 };
 
 #[cfg(feature = "media-gstreamer")]
@@ -808,6 +809,21 @@ impl ServoInner {
             ConstellationToEmbedderMsg::AllowOpeningWebView(webview_id, response_sender) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.request_create_new(response_sender);
+                }
+            },
+            ConstellationToEmbedderMsg::RequestDownload(webview_id, report) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    let request = DownloadRequest {
+                        url: report.url.into_url(),
+                        frame_url: report.frame_url.map(|url| url.into_url()),
+                        suggested_filename: report.suggested_filename,
+                        mime: report.mime,
+                        size_hint: report.size_hint,
+                        download_id: report.download_id,
+                        constellation_proxy: self.constellation_proxy.clone(),
+                        response_sent: false,
+                    };
+                    webview.delegate().request_download(webview, request);
                 }
             },
             ConstellationToEmbedderMsg::WebViewClosed(webview_id) => {

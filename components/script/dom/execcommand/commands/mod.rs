@@ -4,6 +4,7 @@
 
 pub(crate) mod backcolor;
 pub(crate) mod bold;
+pub(crate) mod copy;
 pub(crate) mod createlink;
 pub(crate) mod defaultparagraphseparator;
 pub(crate) mod delete;
@@ -20,6 +21,7 @@ pub(crate) mod insertparagraph;
 pub(crate) mod inserttext;
 pub(crate) mod italic;
 pub(crate) mod removeformat;
+pub(crate) mod selectall;
 pub(crate) mod strikethrough;
 pub(crate) mod stylewithcss;
 pub(crate) mod subscript;

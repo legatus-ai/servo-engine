@@ -119,6 +119,11 @@ impl Document {
         if is_command_listed_in_miscellaneous_section(command_name) {
             return Some(selection);
         }
+        // The copy command works on any selection, editable or not, matching
+        // other browsers; it only needs a live range.
+        if command_name == CommandName::Copy {
+            return selection.active_range(cx).map(|_| selection);
+        }
         // > The other commands defined here are enabled if the active range is not null,
         let range = selection.active_range(cx)?;
         // > its start node is either editable or an editing host,
@@ -154,6 +159,7 @@ impl Document {
         Some(match_ignore_ascii_case! { &command_id.str(),
             "backcolor" => CommandName::BackColor,
             "bold" => CommandName::Bold,
+            "copy" => CommandName::Copy,
             "createlink" => CommandName::CreateLink,
             "delete" => CommandName::Delete,
             "defaultparagraphseparator" => CommandName::DefaultParagraphSeparator,
@@ -170,6 +176,7 @@ impl Document {
             "inserttext" => CommandName::InsertText,
             "italic" => CommandName::Italic,
             "removeformat" => CommandName::RemoveFormat,
+            "selectall" => CommandName::SelectAll,
             "strikethrough" => CommandName::Strikethrough,
             "stylewithcss" => CommandName::StyleWithCss,
             "subscript" => CommandName::Subscript,
@@ -280,41 +287,46 @@ impl DocumentExecCommandSupport for Document {
             // Step 4.1. Let affected editing host be the editing host that is an inclusive ancestor
             // of the active range's start node and end node, and is not the ancestor of any editing host
             // that is an inclusive ancestor of the active range's start node and end node.
-            let Some(affected_editing_host) = selection
+            let host = selection
                 .active_range(cx)
                 .expect("Must always have an active range")
                 .CommonAncestorContainer()
-                .editing_host_of()
-            else {
-                return false;
-            };
-
-            // Step 4.2. Fire an event named "beforeinput" at affected editing host using InputEvent,
-            // with its bubbles and cancelable attributes initialized to true, and its data attribute initialized to null
-            let event = InputEvent::new(
-                cx,
-                window,
-                None,
-                atom!("beforeinput"),
-                true,
-                true,
-                Some(window),
-                0,
-                None,
-                false,
-                DOMString::new(),
-            );
-            let event = event.upcast::<Event>();
-            // Step 4.3. If the value returned by the previous step is false, return false.
-            if !event.fire(cx, affected_editing_host.upcast()) {
+                .editing_host_of();
+            // The copy command works on any selection, editable or not,
+            // matching other browsers; without a host there are simply no
+            // beforeinput/input events to fire around the action.
+            if host.is_none() && command != CommandName::Copy {
                 return false;
             }
 
-            // Step 4.4. If command is not enabled, return false.
-            let Some(new_selection) = self.selection_if_command_is_enabled(cx, command) else {
-                return false;
-            };
-            selection = new_selection;
+            if let Some(affected_editing_host) = &host {
+                // Step 4.2. Fire an event named "beforeinput" at affected editing host using InputEvent,
+                // with its bubbles and cancelable attributes initialized to true, and its data attribute initialized to null
+                let event = InputEvent::new(
+                    cx,
+                    window,
+                    None,
+                    atom!("beforeinput"),
+                    true,
+                    true,
+                    Some(window),
+                    0,
+                    None,
+                    false,
+                    DOMString::new(),
+                );
+                let event = event.upcast::<Event>();
+                // Step 4.3. If the value returned by the previous step is false, return false.
+                if !event.fire(cx, affected_editing_host.upcast()) {
+                    return false;
+                }
+
+                // Step 4.4. If command is not enabled, return false.
+                let Some(new_selection) = self.selection_if_command_is_enabled(cx, command) else {
+                    return false;
+                };
+                selection = new_selection;
+            }
 
             // Step 4.5. Let affected editing host be the editing host that is an inclusive ancestor
             // of the active range's start node and end node, and is not the ancestor of any editing host

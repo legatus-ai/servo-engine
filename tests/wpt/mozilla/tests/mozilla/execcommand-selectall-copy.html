@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>execCommand selectAll and copy (Legatus #3)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<div id="ce" contenteditable="true">edit me</div>
+<script>
+"use strict";
+const selection = getSelection();
+const ce = document.getElementById("ce");
+
+test(() => {
+  assert_true(document.queryCommandSupported("selectAll"), "selectAll supported");
+  assert_true(document.queryCommandSupported("copy"), "copy supported");
+  ce.focus();
+  selection.collapse(ce.firstChild, 4);
+  assert_true(document.queryCommandEnabled("selectAll"), "selectAll enabled in editing host");
+  assert_true(document.queryCommandEnabled("copy"), "copy enabled in editing host");
+}, "selectAll and copy are supported and enabled");
+
+test(() => {
+  selection.collapse(ce.firstChild, 4);
+  assert_true(document.execCommand("selectAll"), "selectAll returns true");
+  assert_equals(selection.toString(), "edit me", "selectAll selects editing host contents");
+  assert_equals(selection.anchorNode, ce, "anchor is the editing host");
+  assert_equals(selection.anchorOffset, 0, "anchor at start");
+  assert_equals(selection.focusOffset, 1, "focus after the text child");
+}, "selectAll selects the editing host contents");
+
+test(() => {
+  // Collapsed selection copies nothing. Copy with activation is exercised
+  // in execcommand-copy-security.html for the no-activation gate; the
+  // positive path (event ordering, page setData) needs a real user
+  // gesture, which this harness cannot synthesize.
+  selection.collapse(ce.firstChild, 4);
+  assert_false(document.execCommand("copy"), "copy with collapsed selection returns false");
+}, "copy with collapsed selection fails");
+
+test(() => {
+  // Nearby commands keep working.
+  selection.collapse(ce.firstChild, 4);
+  assert_true(document.execCommand("insertText", false, "X"), "insertText returns true");
+  assert_equals(ce.textContent, "editX me", "insertText inserts");
+  assert_true(document.execCommand("bold"), "bold returns true");
+}, "insertText and bold still work");
+</script>
+</body>
+</html>

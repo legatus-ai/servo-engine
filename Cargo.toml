@@ -7,6 +7,8 @@ members = [
     "ports/servoshell",
     "tests/capi",
     "tests/unit/*",
+    # Legatus: standalone sync build gate (docs/upstream-and-scorecard.md).
+    "tools/legatus-check",
 ]
 default-members = ["ports/servoshell"]
 exclude = [".cargo", "support/crown"]
@@ -220,13 +222,14 @@ rustls-pki-types = "1.14"
 rustls-platform-verifier = "0.7.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = "0.8.0"
-selectors = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
+selectors = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
 serde = "1.0.228"
 serde_bytes = "0.11"
 serde_core = "1.0.226"
 serde_json = "1.0"
 serde_test = "1.0"
-servo_arc = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
+servo_arc = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+serde_with = "3.13"
 sha1 = "0.11"
 sha2 = "0.11"
 sha3 = "0.12"
@@ -237,12 +240,12 @@ speexdsp-resampler = "0.1.0"
 sponge-cursor = "0.1"
 string_cache = { version = "0.11" }
 strum = { version = "0.28", features = ["derive"] }
-stylo = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
-stylo_atoms = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
-stylo_dom = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
-stylo_malloc_size_of = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
-stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
-stylo_traits = { git = "https://github.com/servo/stylo", rev = "1581aae4050b13112c1a2cc108b3d42619992297" }
+stylo = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo_atoms = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo_dom = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo_malloc_size_of = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo_traits = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
 surfman = { version = "0.13.0", features = ["chains"] }
 swapper = "0.1"
 syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
@@ -447,6 +450,19 @@ codegen-units = 1
 #
 #     <crate> = { path = "/path/to/local/checkout" }
 #
+# Legatus: sibling rust-url checkout, branch legatus at
+# 98a5fbb (upstream #1127 plus percent-encode trailing space in opaque
+# path, servo/rust-url#1123) plus the legatus_opaque_path_trailing_space_encoded
+# fork marker consumed as a build-time check by tools/legatus-check
+# (fails against upstream url). Without this patch the engine workspace
+# resolves crates.io url while downstream workspaces resolve the fork —
+# same source, two different URL parsers (invariant 13). A path is used
+# because the fork lives on no remote yet; prefer a git dependency on
+# repo+rev when it does. Requires the ../rust-url sibling checkout at
+# that branch; keep it in sync. The pane/renderer manifests must carry
+# the same patch.
+url = { path = "../rust-url/url" }
+#
 # For html5ever:
 #
 # html5ever = { path = "../html5ever/html5ever" }
@@ -470,17 +486,25 @@ codegen-units = 1
 # content-security-policy = { path = "../rust-content-security-policy" }
 #
 # Or for Stylo:
-#
-# [patch."https://github.com/servo/stylo"]
-# selectors = { path = "../stylo/selectors" }
-# servo_arc = { path = "../stylo/servo_arc" }
-# stylo = { path = "../stylo/style" }
-# stylo_atoms = { path = "../stylo/stylo_atoms" }
-# stylo_dom = { path = "../stylo/stylo_dom" }
-# stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-# stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-# stylo_traits = { path = "../stylo/style_traits" }
-#
+# Legatus #7: sibling stylo checkout, branch legatus at
+# 33a783cbd2301b71494921272dc472f9678c2911, with text-overflow ungated
+# (longhands.toml hunk removing it from layout.unimplemented) plus the
+# legatus_text_overflow_ungated fork marker consumed as a build-time
+# check by tools/legatus-check (fails against upstream Stylo).
+# A path is used because the fork lives on no remote yet; prefer a git
+# dependency on repo+rev when it does. Requires the ../stylo sibling
+# checkout at that branch; keep it in sync and re-apply the hunk there
+# after every upstream stylo rebase. The pane renderer manifest must
+# carry the same patch to get the ellipsis.
+[patch."https://github.com/servo/stylo"]
+selectors = { path = "../stylo/selectors" }
+servo_arc = { path = "../stylo/servo_arc" }
+stylo = { path = "../stylo/style" }
+stylo_atoms = { path = "../stylo/stylo_atoms" }
+stylo_dom = { path = "../stylo/stylo_dom" }
+stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
+stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
+stylo_traits = { path = "../stylo/style_traits" }
 # Or for another Git dependency:
 #
 # [patch."https://github.com/servo/<repository>"]

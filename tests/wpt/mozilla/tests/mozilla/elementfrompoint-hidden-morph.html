@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>elementFromPoint with stale vs fresh coordinates (Legatus row 6)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  section { height: 30px; width: 200px; background: #cff; }
+  section.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<script>
+"use strict";
+// 15 sections; hide the middle two (5,6) so layout above the target is
+// unchanged but everything below shifts up by 60px — the stale-geometry
+// situation the pane produces when it measures before a morph.
+const host = document.getElementById("host");
+const sections = [];
+for (var i = 0; i < 15; i++) {
+  const s = document.createElement("section");
+  s.id = "sec" + i;
+  const b = document.createElement("div");
+  b.textContent = "sec" + i;
+  s.appendChild(b);
+  host.appendChild(s);
+  sections.push(s);
+}
+// A few child mutations for the long-lived flavour.
+sections.forEach(function (s, i) {
+  const n = document.createElement("span");
+  n.textContent = "m" + i;
+  s.firstElementChild.appendChild(n);
+});
+
+const target = sections[12];
+// Stale rect: measured BEFORE hiding (target centre includes the 60px
+// that sections 5,6 occupied above it).
+const staleRect = target.getBoundingClientRect();
+const staleX = staleRect.x + staleRect.width / 2;
+const staleY = staleRect.y + staleRect.height / 2;
+
+sections[5].classList.add("hidden");
+sections[6].classList.add("hidden");
+
+test(() => {
+  const r = target.getBoundingClientRect();
+  const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  assert_not_equals(el, null, "fresh hit exists");
+  assert_true(target.contains(el), "fresh coords hit the intended section");
+}, "control: fresh coordinates hit correctly");
+
+test(() => {
+  const el = document.elementFromPoint(staleX, staleY);
+  const hitTarget = el !== null && target.contains(el);
+  // Documents the row-6/geometry mechanism: the function is correct,
+  // the stale input points 60px too low, so the hit lands on a later
+  // section (or null) — read by the caller as "impossible".
+  assert_false(hitTarget, "stale pre-toggle coords must NOT hit section 12");
+}, "stale coordinates mis-hit: correct function, wrong input");
+
+function hitIdAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (el === null) { return "null"; }
+  const sec = el.closest ? el.closest("section") : null;
+  return sec ? sec.id : el.tagName;
+}
+
+test(() => {
+  // Offsets mirroring the pane's measured geometry drift: ~19px is one
+  // cell row (1.60px/row pitch error), ~49px is the text-area offset.
+  // Fresh centre of section 12 is the origin; each offset must mis-hit.
+  const r = target.getBoundingClientRect();
+  const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+  const hit19 = hitIdAt(cx, cy + 19);
+  const hit49 = hitIdAt(cx, cy + 49);
+  assert_equals(hit19, "sec13", "+19px hits one row down");
+  assert_equals(hit49, "sec14", "+49px hits text-area offset down");
+}, "geometry-drift offsets mis-hit (records actual targets)");
+</script>
+</body>
+</html>

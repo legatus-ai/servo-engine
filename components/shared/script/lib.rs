@@ -16,7 +16,7 @@ use crossbeam_channel::RecvTimeoutError;
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
-    EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
+    AllowOrDeny, EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
     JavaScriptEvaluationId, MediaSessionActionType, MouseButton, PaintHitTestResult,
     ScriptToEmbedderChan, Theme, ViewportDetails, WebDriverScriptCommand,
 };
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSender};
 use servo_base::id::{
-    BrowsingContextId, HistoryStateId, LCPCandidateID, PipelineId, PipelineNamespaceId,
+    BrowsingContextId, DownloadId, HistoryStateId, LCPCandidateID, PipelineId, PipelineNamespaceId,
     PipelineNamespaceRequest, ScriptEventLoopId, WebViewId,
 };
 #[cfg(feature = "bluetooth")]
@@ -324,6 +324,9 @@ pub enum ScriptThreadMessage {
     SetAccessibilityActive(PipelineId, bool, Epoch),
     /// Force a garbage collection in this script thread.
     TriggerGarbageCollection,
+    /// The embedder's answer to a reported download (row #9, Ref BRO-53).
+    /// Allow is accepted but treated as denied until file writing lands.
+    DownloadResponse(DownloadId, AllowOrDeny),
 }
 
 impl fmt::Debug for ScriptThreadMessage {

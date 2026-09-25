@@ -51,6 +51,7 @@ mod from_embedder {
             match self {
                 Self::Exit => target!("Exit"),
                 Self::AllowNavigationResponse(..) => target!("AllowNavigationResponse"),
+                Self::DownloadResponse(..) => target!("DownloadResponse"),
                 Self::LoadUrl(..) => target!("LoadUrl"),
                 Self::TraverseHistory(..) => target!("TraverseHistory"),
                 Self::ChangeViewportDetails(..) => target!("ChangeViewportDetails"),
@@ -203,6 +204,8 @@ mod from_script {
                 Self::TriggerGarbageCollection => target!("TriggerGarbageCollection"),
                 Self::AcquireWakeLock(..) => target!("AcquireWakeLock"),
                 Self::ReleaseWakeLock(..) => target!("ReleaseWakeLock"),
+                Self::ReportDownload(..) => target!("ReportDownload"),
+                Self::CancelDownload(..) => target!("CancelDownload"),
             }
         }
     }

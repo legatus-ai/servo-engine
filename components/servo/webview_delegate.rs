@@ -16,7 +16,7 @@ use embedder_traits::{
 };
 use paint_api::rendering_context::RenderingContext;
 use servo_base::generic_channel::{GenericCallback, GenericSender, SendError};
-use servo_base::id::PipelineId;
+use servo_base::id::{DownloadId, PipelineId};
 use servo_constellation_traits::EmbedderToConstellationMessage;
 use tokio::sync::mpsc::UnboundedSender as TokioSender;
 use tokio::sync::oneshot::Sender;
@@ -66,6 +66,53 @@ impl Drop for NavigationRequest {
                     self.pipeline_id,
                     true,
                 ));
+        }
+    }
+}
+
+/// A request to download a navigation response instead of rendering it
+/// (row #9, Ref BRO-53). The embedder answers allow (with a path, once
+/// file writing lands) or deny; a request that is never answered denies
+/// on drop, keeping the current page. This deliberately fails closed,
+/// unlike [`NavigationRequest`]'s drop which allows.
+pub struct DownloadRequest {
+    pub url: Url,
+    pub frame_url: Option<Url>,
+    pub suggested_filename: Option<String>,
+    pub mime: Option<String>,
+    pub size_hint: Option<u64>,
+    pub(crate) download_id: DownloadId,
+    pub(crate) constellation_proxy: ConstellationProxy,
+    pub(crate) response_sent: bool,
+}
+
+impl DownloadRequest {
+    /// Allow this download to proceed to the given path. Currently treated
+    /// as denied until file writing lands (the pane never answers Allow in
+    /// browse mode); the round trip exists so a future Allow works.
+    pub fn allow(mut self, _path: PathBuf) {
+        self.respond(AllowOrDeny::Allow);
+    }
+
+    /// Deny this download, keeping the current page and cancelling the load.
+    pub fn deny(mut self) {
+        self.respond(AllowOrDeny::Deny);
+    }
+
+    fn respond(&mut self, decision: AllowOrDeny) {
+        self.constellation_proxy
+            .send(EmbedderToConstellationMessage::DownloadResponse(
+                self.download_id,
+                decision,
+            ));
+        self.response_sent = true;
+    }
+}
+
+impl Drop for DownloadRequest {
+    fn drop(&mut self) {
+        if !self.response_sent {
+            self.respond(AllowOrDeny::Deny);
         }
     }
 }
@@ -1009,6 +1056,11 @@ pub trait WebViewDelegate {
     /// size. For instance, a reasonable limitation might be that the final size is no
     /// larger than the screen size.
     fn request_resize_to(&self, _webview: WebView, _requested_outer_size: DeviceIntSize) {}
+    /// Whether or not to allow a navigation response recognised as a
+    /// download instead of rendering it (row #9, Ref BRO-53). The default
+    /// does nothing, which denies via [`DownloadRequest`]'s drop and keeps
+    /// the current page — so existing embedders fail closed unchanged.
+    fn request_download(&self, _webview: WebView, _request: DownloadRequest) {}
     /// This method is called when web content makes a request to open a new
     /// `WebView`, such as via the [`window.open`] DOM API. If this request is
     /// ignored, no new `WebView` will be opened. Embedders can handle this method by

@@ -68,6 +68,8 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::{
     GetRootNodeOptions, NodeConstants, NodeMethods,
 };
 use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
+use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEventMethods;
+use crate::dom::uievent::UIEvent;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::ShadowRoot_Binding::ShadowRootMethods;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::{
     ShadowRootMode, SlotAssignmentMode,
@@ -125,7 +127,9 @@ use crate::dom::text::Text;
 use crate::dom::traversal::LightDomNoGcTraversal;
 use crate::dom::types::{CDATASection, KeyboardEvent, MouseEvent, ProcessingInstruction};
 use crate::dom::window::Window;
-use crate::drag::document_selection_drag::DocumentSelectionDragHandler;
+use crate::drag::document_selection_drag::{
+    DocumentSelectionDragHandler, adjust_anchor_for_user_select,
+};
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
 use crate::event_loop::document_loader::DocumentLoader;
 use crate::event_loop::script_thread::ScriptThread;
@@ -244,6 +248,10 @@ bitflags! {
         /// have it set too. Conversely, if a node has this flag unset then all its flat
         /// tree descendants have it unset too.
         const OVERLAPS_DOCUMENT_SELECTION = 1 << 14;
+
+        /// For nodes with the `OVERLAPS_DOCUMENT_SELECTION`, whether the used value of
+        /// [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select) is `none`.
+        const SELECTION_INHIBITED = 1 << 15;
     }
 }
 
@@ -385,7 +393,8 @@ impl Node {
             .union(NodeFlags::HAS_DIRTY_DESCENDANTS)
             .union(NodeFlags::HAS_SNAPSHOT)
             .union(NodeFlags::HANDLED_SNAPSHOT)
-            .union(NodeFlags::OVERLAPS_DOCUMENT_SELECTION);
+            .union(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            .union(NodeFlags::SELECTION_INHIBITED);
 
         for node in root.traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::No) {
             node.set_flag(RESET_FLAGS | NodeFlags::IS_IN_SHADOW_TREE, false);
@@ -469,7 +478,8 @@ impl Node {
             .union(NodeFlags::HAS_DIRTY_DESCENDANTS)
             .union(NodeFlags::HAS_SNAPSHOT)
             .union(NodeFlags::HANDLED_SNAPSHOT)
-            .union(NodeFlags::OVERLAPS_DOCUMENT_SELECTION);
+            .union(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            .union(NodeFlags::SELECTION_INHIBITED);
 
         let document = root.owner_document();
         for node in root.traverse_preorder(ShadowIncluding::No) {
@@ -690,6 +700,19 @@ impl Node {
         self.owner_doc()
             .accessibility_data_mut()
             .add_pending_accessibility_damage_for_node(self, damage);
+    }
+
+    /// Set selection information on the given node if it is an element that responds to selection.
+    /// Returns `true` if a new display list is necessary after this update.
+    pub(crate) fn set_element_selection(&self, selected: bool) -> bool {
+        debug_assert!(
+            self.downcast::<CharacterData>().is_none(),
+            "Should never be called on CharacterData"
+        );
+        self.layout_data()
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout_data| layout_data.set_element_selection(selected))
     }
 }
 
@@ -4620,11 +4643,34 @@ impl VirtualMethods for Node {
             .as_ref()
             .map(|(node, offset)| (node, *offset))
             .unwrap_or((&hit_test_result.node, Utf32CodeUnitsOrNodeOffset(0)));
-        selection.collapse_to_dom_position(cx, container, offset);
+        let Some((container, offset, user_select_contain_node)) =
+            adjust_anchor_for_user_select(cx, container.clone(), offset)
+        else {
+            return;
+        };
+        // A mousedown that continues a click sequence (detail >= 2, i.e. the
+        // second press of a double click) upgrades the caret to a word
+        // selection (Legatus #8), matching other browsers. This runs here —
+        // not on mouseup/dblclick — because only the button-down hit test
+        // carries a DOM position for selection. The position was already
+        // adjusted for `user-select` above: when the adjustment snapped the
+        // anchor to an element (user-select: all), the double-click selects
+        // that element's contents as a unit instead of a word.
+        if event.upcast::<UIEvent>().Detail() >= 2 &&
+            hit_test_result.dom_position_for_selection.is_some()
+        {
+            if container.downcast::<CharacterData>().is_some() {
+                selection.select_word_at_dom_position(cx, &container, offset);
+            } else {
+                let _ = selection.SelectAllChildren(cx, &container);
+            }
+        } else {
+            selection.collapse_to_dom_position(cx, &container, offset);
+        };
         document
             .event_handler()
             .install_drag_gesture(DragGesture::new(DragHandler::DocumentSelection(
-                DocumentSelectionDragHandler,
+                DocumentSelectionDragHandler::new(user_select_contain_node.as_deref()),
             )));
         event.upcast::<Event>().mark_as_handled();
     }

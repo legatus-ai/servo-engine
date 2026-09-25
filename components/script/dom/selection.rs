@@ -10,7 +10,7 @@ use dom_struct::dom_struct;
 use icu_segmenter::WordSegmenter;
 use icu_segmenter::options::WordBreakInvariantOptions;
 use js::context::{JSContext, NoGC};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::dom::UnrootedDom;
@@ -42,6 +42,16 @@ use crate::dom::staticrange::StaticRange;
 use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
 use crate::dom::types::ShadowRoot;
 use crate::dom::{CharacterData, FlatTreeParent, NodeDamage, NodeFlags, StartOrEnd};
+
+/// Used value of [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select):
+/// like the computed value but excludes `auto`.
+#[derive(Copy, Clone, PartialEq)]
+pub(crate) enum UsedUserSelect {
+    Text,
+    None,
+    Contain,
+    All,
+}
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
 pub(crate) enum Direction {
@@ -476,7 +486,7 @@ impl Selection {
         self.visible_selection_dirty.set(true);
     }
 
-    fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
+    pub(crate) fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
         let range = self.range.borrow();
         let range = range.as_ref()?;
         Some(match self.direction.get() {
@@ -766,6 +776,29 @@ impl Selection {
         } else {
             let _ = self.Extend(cx, container, offset);
         }
+    }
+
+    /// Double-click default action: select the word around a hit-test DOM
+    /// position (Legatus #8). Non-text containers keep the `mousedown`
+    /// collapse; whitespace prefers the following word, text end the
+    /// previous one; empty/whitespace-only text keeps the collapse.
+    pub(crate) fn select_word_at_dom_position(
+        &self,
+        cx: &mut JSContext,
+        container: &Node,
+        offset: Utf32CodeUnitsOrNodeOffset,
+    ) {
+        let Some(character_data) = container.downcast::<CharacterData>() else {
+            return;
+        };
+        let text = character_data.data().to_string();
+        let len = text.encode_utf16().count() as u32;
+        let offset = container.to_sibling_or_utf16_offset(offset).min(len);
+        let Some((start, end)) = word_around(&text, offset) else {
+            return;
+        };
+        let node = DomRoot::from_ref(container);
+        let _ = self.SetBaseAndExtent(cx, &node, start, &node, end);
     }
 }
 
@@ -1487,16 +1520,59 @@ fn edge_text_descendant(node: &Node, forward: bool) -> Option<DomRoot<Node>> {
     }
 }
 
+/// Resolve an element focus (container + child index) to the text position
+/// a step starts from. Forward movement starts at the end of the content
+/// before child `index` so the step crosses it; backward movement starts
+/// at the start of the content at `index` for the same reason.
+fn element_focus_position(
+    node: &DomRoot<Node>,
+    index: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    let children: Vec<DomRoot<Node>> = node.children().collect();
+    let index = (index as usize).min(children.len());
+    let text_len = |text: &DomRoot<Node>| {
+        text.downcast::<CharacterData>()
+            .map(|data| data.data().encode_utf16().count() as u32)
+    };
+    if forward {
+        for child in children[..index].iter().rev() {
+            if let Some(text) = edge_text_descendant(child, false) {
+                return Some((text.clone(), text_len(&text)?));
+            }
+        }
+        for child in children[index..].iter() {
+            if let Some(text) = edge_text_descendant(child, true) {
+                return Some((text, 0));
+            }
+        }
+        None
+    } else {
+        for child in children[index..].iter() {
+            if let Some(text) = edge_text_descendant(child, true) {
+                return Some((text, 0));
+            }
+        }
+        for child in children[..index].iter().rev() {
+            if let Some(text) = edge_text_descendant(child, false) {
+                return Some((text.clone(), text_len(&text)?));
+            }
+        }
+        None
+    }
+}
+
 /// Move a focus point one unit forward or backward, returning the new
-/// (node, UTF-16 offset). Element foci descend to edge text; movement
-/// crosses text nodes. Returns None when there is nowhere to go.
+/// (node, UTF-16 offset). Element foci resolve to the text edge at their
+/// child index; movement crosses text nodes. Returns None when there is
+/// nowhere to go.
 fn modify_focus(
     focus_node: &DomRoot<Node>,
     focus_offset: u32,
     forward: bool,
     granularity: ModifyGranularity,
 ) -> Option<(DomRoot<Node>, u32)> {
-    // Normalize element foci to edge text first.
+    // Normalize element foci to the text edge at their child index first.
     let (text_node, offset) = if focus_node.is::<CharacterData>() {
         let len = focus_node
             .downcast::<CharacterData>()?
@@ -1505,13 +1581,7 @@ fn modify_focus(
             .count() as u32;
         (focus_node.clone(), focus_offset.min(len))
     } else {
-        let edge = edge_text_descendant(focus_node, forward)?;
-        let len = edge
-            .downcast::<CharacterData>()?
-            .data()
-            .encode_utf16()
-            .count() as u32;
-        (edge, if forward { 0 } else { len })
+        element_focus_position(focus_node, focus_offset, forward)?
     };
     let text = text_node
         .downcast::<CharacterData>()?
@@ -1565,18 +1635,100 @@ fn modify_character(
     }
 }
 
-/// One word forward/backward (ICU UAX #29 boundaries). Stays in-node;
-/// at the edge, crosses to the next/previous text like character movement.
-fn modify_word(
-    text_node: &DomRoot<Node>,
-    text: &str,
-    offset: u32,
-    forward: bool,
-) -> Option<(DomRoot<Node>, u32)> {
-    use icu_segmenter::WordSegmenter;
-    use icu_segmenter::options::WordBreakInvariantOptions;
-
+/// ICU UAX #29 word segments of `text` as (start, end, is_word) UTF-16
+/// ranges. `is_word` is false for whitespace-only segments.
+fn word_segments(text: &str) -> Vec<(u32, u32, bool)> {
     let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let mut start_byte = 0usize;
+    let mut start = 0u32;
+    let mut segments = Vec::new();
+    for end_byte in segmenter.segment_str(text) {
+        let segment = &text[start_byte..end_byte];
+        let end = start + segment.encode_utf16().count() as u32;
+        segments.push((start, end, segment.chars().any(|c| !c.is_whitespace())));
+        start_byte = end_byte;
+        start = end;
+    }
+    segments
+}
+
+/// Word (start, end) UTF-16 offsets containing `offset`: a word starting
+/// at or strictly containing the offset wins; a click exactly at a word
+/// end (the caret the hit test reports there) selects the word just
+/// clicked, not the following one. Whitespace strictly inside a longer
+/// run prefers the following word, text start/end fall back to the
+/// nearest word. Returns None when there is no word (empty or
+/// whitespace-only text).
+fn word_around(text: &str, offset: u32) -> Option<(u32, u32)> {
+    let segments = word_segments(text);
+    let len = segments.last().map(|(_, end, _)| *end).unwrap_or(0);
+    let offset = offset.min(len);
+    // Rule 1: a word strictly containing the offset, or starting at it.
+    if let Some((start, end, _)) = segments
+        .iter()
+        .find(|(start, end, is_word)| *is_word && *start <= offset && offset < *end)
+    {
+        return Some((*start, *end));
+    }
+    // Rule 2: a click exactly at a word end (the caret the hit test reports
+    // there) selects the word just clicked, not the following one.
+    if let Some((start, end, _)) = segments
+        .iter()
+        .find(|(_, end, is_word)| *is_word && *end == offset)
+    {
+        return Some((*start, *end));
+    }
+    // No containing word: a segment starting here decides. Whitespace (or
+    // text end) looks forward to the next word ...
+    let forward = segments
+        .iter()
+        .find(|(start, _, _)| *start == offset)
+        .is_none_or(|(_, _, is_word)| !is_word);
+    if forward {
+        if let Some((start, end, _)) = segments
+            .iter()
+            .find(|(start, _, is_word)| *is_word && *start >= offset)
+        {
+            return Some((*start, *end));
+        }
+    } else if let Some((start, end, _)) = segments
+        .iter()
+        .rev()
+        .find(|(_, end, is_word)| *is_word && *end <= offset)
+    {
+        // ... punctuation looks back to the previous word.
+        return Some((*start, *end));
+    }
+    // Fallback: nearest word on the other side (start/end of text).
+    if forward {
+        segments
+            .iter()
+            .rev()
+            .find(|(_, end, is_word)| *is_word && *end <= offset)
+            .map(|(start, end, _)| (*start, *end))
+    } else {
+        segments
+            .iter()
+            .find(|(start, _, is_word)| *is_word && *start >= offset)
+            .map(|(start, end, _)| (*start, *end))
+    }
+}
+
+/// UTF-16 boundaries (including 0 and text length) ending a word segment
+/// (ICU UAX #29), i.e. boundaries a forward word step can land on.
+/// Space-only segments contribute no landing boundary.
+fn word_end_boundaries(text: &str) -> Vec<u32> {
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let byte_index_of = |offset: u32| {
+        let mut utf16 = 0u32;
+        for (byte, c) in text.char_indices() {
+            if utf16 >= offset {
+                return byte;
+            }
+            utf16 += c.len_utf16() as u32;
+        }
+        text.len()
+    };
     // Byte boundaries to UTF-16 offsets.
     let mut boundaries: Vec<u32> = segmenter
         .segment_str(text)
@@ -1589,15 +1741,82 @@ fn modify_word(
     if boundaries.last() != Some(&len) {
         boundaries.push(len);
     }
-    let target = if forward {
-        boundaries.into_iter().find(|boundary| *boundary > offset)
-    } else {
-        boundaries.into_iter().rev().find(|boundary| *boundary < offset)
-    };
+    boundaries
+        .windows(2)
+        .filter(|pair| {
+            text[byte_index_of(pair[0])..byte_index_of(pair[1])]
+                .chars()
+                .any(|c| !c.is_whitespace())
+        })
+        .map(|pair| pair[1])
+        .collect()
+}
+
+/// All UTF-16 segment boundaries (including 0 and text length), used for
+/// backward word steps which stop at every boundary.
+fn word_boundaries(text: &str) -> Vec<u32> {
+    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+    let mut boundaries: Vec<u32> = segmenter
+        .segment_str(text)
+        .map(|index| text[..index].encode_utf16().count() as u32)
+        .collect();
+    if boundaries.first() != Some(&0) {
+        boundaries.insert(0, 0);
+    }
+    let len = text.encode_utf16().count() as u32;
+    if boundaries.last() != Some(&len) {
+        boundaries.push(len);
+    }
+    boundaries
+}
+
+/// One word forward/backward (ICU UAX #29 boundaries). Forward movement
+/// lands on word ends, skipping space-only segments (per upstream
+/// modify-extend-word-trailing-inline-block, 4 extends cover 4 words);
+/// backward movement stops at every boundary. At the node edge, forward
+/// continues into following text nodes looking for the next word end;
+/// backward crosses over and stops at the edge like character movement.
+fn modify_word(
+    text_node: &DomRoot<Node>,
+    text: &str,
+    offset: u32,
+    forward: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    if forward {
+        if let Some(target) = word_end_boundaries(text)
+            .into_iter()
+            .find(|boundary| *boundary > offset)
+        {
+            return Some((text_node.clone(), target));
+        }
+        // No word end left in this node: look through following text,
+        // skipping nodes with no word (all-space runs).
+        let root = text_node.owner_doc();
+        for node in text_node
+            .following_nodes(root.upcast(), ShadowIncluding::No)
+            .filter(|node| node.is::<CharacterData>())
+        {
+            let next_text = node
+                .downcast::<CharacterData>()?
+                .data()
+                .to_string();
+            if let Some(target) = word_end_boundaries(&next_text)
+                .into_iter()
+                .find(|boundary| *boundary > 0)
+            {
+                return Some((node, target));
+            }
+        }
+        return None;
+    }
+    let target = word_boundaries(text)
+        .into_iter()
+        .rev()
+        .find(|boundary| *boundary < offset);
     match target {
         Some(target) => Some((text_node.clone(), target)),
         // No boundary left in this node: cross over and stop at the edge.
-        None => modify_character(text_node, text, if forward { len } else { 0 }, forward),
+        None => modify_character(text_node, text, 0, forward),
     }
 }
 enum FlatTreeNodePosition {
@@ -1653,7 +1872,7 @@ fn position_in_flat_tree_for_selection(
 impl Node {
     /// Get the `Utf16CodeUnits` offset for the given offset if `self` is a
     /// `CharacterData` or else return the offset in the child list.
-    fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
+    pub(crate) fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
         if let Some(character_data) = self.downcast::<CharacterData>() {
             // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
             offset
@@ -1883,6 +2102,8 @@ struct VisibleSelectionFlagUpdate<'no_gc> {
     /// Hash keys are pointer addresses which are not directly controlled by web content
     /// so we don’t need HashDoS resistance and can use a faster hasher than `std`’s default
     previously_flagged_nodes: FxHashSet<UnrootedDom<'no_gc, Node>>,
+    /// Cache shared between calls to [`Node::used_user_select`]
+    used_user_select_cache: FxHashMap<UnrootedDom<'no_gc, Node>, UsedUserSelect>,
     /// Whether or not this update requires a display list update.
     needs_new_display_list: bool,
 }
@@ -1897,6 +2118,7 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
         let mut update = Self {
             no_gc,
             previously_flagged_nodes,
+            used_user_select_cache: Default::default(),
             needs_new_display_list: false,
         };
 
@@ -1925,19 +2147,21 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             self.previously_flagged_nodes.remove(node);
         }
 
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(
-                character_data,
-                Some(flat_tree_selection.range_for_character_data(character_data)),
-            );
-        }
+        // TODO: We should ensure that the style is up-to-date before reading the
+        // `user-select` property and changes to `user-select` should trigger new visual
+        // selection updates. Not doing this means that the calculations here are one
+        // layout old and are never run again until the selection changes.
+        let user_select = node.used_user_select(self.no_gc, &mut self.used_user_select_cache);
+        let inhibited = user_select == UsedUserSelect::None;
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, inhibited);
+
+        self.set_node_selection(node, (!inhibited).then_some(flat_tree_selection));
     }
 
     fn clear(&mut self, node: &Node) {
         node.set_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION, false);
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(character_data, None)
-        }
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, false);
+        self.set_node_selection(node, None);
     }
 
     fn set_character_data_selection(
@@ -1955,6 +2179,17 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             character_data
                 .upcast::<Node>()
                 .dirty(self.no_gc, NodeDamage::ContentOrHeritage);
+        }
+    }
+
+    fn set_node_selection(&mut self, node: &Node, flat_tree_selection: Option<&FlatTreeSelection>) {
+        if let Some(character_data) = node.downcast::<CharacterData>() {
+            let range = flat_tree_selection.map(|flat_tree_selection| {
+                flat_tree_selection.range_for_character_data(character_data)
+            });
+            self.set_character_data_selection(character_data, range);
+        } else if node.set_element_selection(flat_tree_selection.is_some()) {
+            self.needs_new_display_list = true;
         }
     }
 

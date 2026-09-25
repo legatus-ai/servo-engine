@@ -46,12 +46,51 @@ impl Document {
         EditingContext::Document(DomRoot::from_ref(self))
     }
 
+    /// The native embedder-driven path (user pressed Ctrl+C, etc.): not
+    /// script-triggered, so no activation gate applies.
     /// <https://www.w3.org/TR/clipboard-apis/#clipboard-actions>
     pub(crate) fn handle_editing_action(
         &self,
         cx: &mut JSContext,
         node: &Node,
         action: EditingActionEvent,
+    ) -> InputEventResult {
+        self.handle_script_or_native_editing_action(cx, node, action, false, false)
+    }
+
+    /// The `document.execCommand()` path: clipboard access requires transient
+    /// user activation (Legatus security: any script must not silently
+    /// overwrite the OS clipboard without a user gesture).
+    pub(crate) fn handle_script_triggered_editing_action(
+        &self,
+        cx: &mut JSContext,
+        node: &Node,
+        action: EditingActionEvent,
+    ) -> InputEventResult {
+        let may_access_clipboard = self.window().has_transient_activation();
+        let result = self.handle_script_or_native_editing_action(
+            cx,
+            node,
+            action,
+            true,
+            may_access_clipboard,
+        );
+        // The action changed (or was allowed to change) the clipboard: consume
+        // the activation, matching other gated APIs.
+        if result.intersects(InputEventResult::Consumed | InputEventResult::DefaultPrevented) {
+            self.window().consume_user_activation();
+        }
+        result
+    }
+
+    /// <https://www.w3.org/TR/clipboard-apis/#clipboard-actions>
+    fn handle_script_or_native_editing_action(
+        &self,
+        cx: &mut JSContext,
+        node: &Node,
+        action: EditingActionEvent,
+        script_triggered: bool,
+        script_may_access_clipboard: bool,
     ) -> InputEventResult {
         let clipboard_event_type = match action {
             EditingActionEvent::Copy => ClipboardEventType::Copy,
@@ -60,12 +99,6 @@ impl Document {
         };
 
         // The script_triggered flag is set if the action runs because of a script, e.g. document.execCommand()
-        let script_triggered = false;
-
-        // The script_may_access_clipboard flag is set
-        // if action is paste and the script thread is allowed to read from clipboard or
-        // if action is copy or cut and the script thread is allowed to modify the clipboard
-        let script_may_access_clipboard = false;
 
         // Step 1 If the script-triggered flag is set and the script-may-access-clipboard flag is unset
         if script_triggered && !script_may_access_clipboard {
@@ -85,20 +118,34 @@ impl Document {
                     // Step 3.1. Copy the selected contents, if any, to the clipboard.
                     // Implementations should create alternate text/html and text/plain
                     // clipboard formats when content in a web page is selected.
-                    if let Some(selection) = editing_context.selection_content(cx) {
+                    //
+                    // Legatus security: a selection inside <input type=password>
+                    // must never reach the clipboard through a script-triggered
+                    // action; the gate above already covers the no-activation case.
+                    let password = script_triggered &&
+                        is_password_editing_context(&editing_context);
+                    let selection = if password {
+                        None
+                    } else {
+                        editing_context.selection_content(cx)
+                    };
+                    if let Some(selection) = selection {
                         self.send_to_embedder(EmbedderMsg::SetClipboardText(
                             self.webview_id(),
                             selection,
                         ));
-                    }
-                    // Step 3.2. Fire a clipboard event named clipboardchange
-                    self.fire_clipboard_event(cx, &event_target, ClipboardEventType::Change);
+                        // Step 3.2. Fire a clipboard event named clipboardchange
+                        self.fire_clipboard_event(cx, &event_target, ClipboardEventType::Change);
 
-                    // This is how `true` is returned from this function.
-                    event.mark_as_handled();
+                        // This is how `true` is returned from this function.
+                        event.mark_as_handled();
+                    }
                 },
                 ClipboardEventType::Cut => {
-                    if let Some(selection) = editing_context.selection_content(cx) &&
+                    let password = script_triggered &&
+                        is_password_editing_context(&editing_context);
+                    if !password &&
+                        let Some(selection) = editing_context.selection_content(cx) &&
                         editing_context.cutting_and_pasting_enabled()
                     {
                         // Step 3.1. If there is a selection in an editable context where
@@ -379,6 +426,17 @@ impl Document {
             ),
             _ => false,
         }
+    }
+}
+
+/// Whether this editing context is inside an `<input type=password>` and
+/// therefore blocked from clipboard writes in the script-triggered path.
+fn is_password_editing_context(editing_context: &EditingContext) -> bool {
+    match editing_context {
+        EditingContext::TextControl(TextControlElementEditingContext::Input(input)) => {
+            input.is_password_field()
+        },
+        _ => false,
     }
 }
 

@@ -11,7 +11,7 @@ use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
 use style::attr::AttrValue;
 use style::parser::ParserContext;
-use style::properties::{PropertyDeclaration, longhands};
+use style::properties::{PropertyDeclaration, PropertyId, SourcePropertyDeclaration, longhands};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::generics::NonNegative;
 use style::values::specified;
@@ -116,8 +116,12 @@ impl VirtualMethods for SVGElement {
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
-        matches!(
-            attr.local_name(),
+        // "text-overflow" has no interned atom, so it is compared by value.
+        // Keep in sync with the presentation attributes mapped in
+        // `synthesize_presentational_hints` below.
+        attr.local_name().to_string() == "text-overflow" ||
+            matches!(
+                attr.local_name(),
             &local_name!("fill") |
                 &local_name!("fill-opacity") |
                 &local_name!("fill-rule") |
@@ -363,6 +367,12 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         );
         self.parse_svg_attribute(
             &parser_context,
+            "text-overflow",
+            longhands::text_overflow::parse_declared,
+            push,
+        );
+        self.parse_svg_attribute(
+            &parser_context,
             "display",
             longhands::display::parse_declared,
             push,
@@ -475,6 +485,37 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
                 parser.parse_entirely(|parse_input| parse(parser_context, parse_input))
             {
                 push(property);
+                return;
+            }
+            // The SVG-lenient parse above matches the value against the
+            // property grammar with no custom properties in scope, so it
+            // cannot handle var() references. Fall back to the standard
+            // declaration parser, which defers var() substitution to cascade
+            // time — exactly like a style="" declaration. Legatus #4:
+            // stroke="var(--c)" must resolve like style="stroke:var(--c)".
+            if !value.contains("var(") {
+                return;
+            }
+            let Ok(id) = PropertyId::parse(attr_name, parser_context) else {
+                return;
+            };
+            let mut declarations = SourcePropertyDeclaration::default();
+            let mut parser = cssparser::Parser::new(value);
+            if parser
+                .parse_entirely(|parse_input| {
+                    PropertyDeclaration::parse_into(
+                        &mut declarations,
+                        id,
+                        parser_context,
+                        parse_input,
+                    )
+                })
+                .is_err()
+            {
+                return;
+            }
+            for declaration in declarations.drain().declarations {
+                push(declaration);
             }
         }
     }

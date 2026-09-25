@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>text-overflow ellipsis contracts (Legatus #7)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+.narrow { width: 100px; overflow: hidden; white-space: nowrap; font: 16px monospace; }
+.ellipsis { text-overflow: ellipsis; }
+.clip { text-overflow: clip; }
+.vis { overflow: visible; }
+</style>
+</head>
+<body>
+<div id="e" class="narrow ellipsis">abcdefghij0123456789abcdefghij</div>
+<div id="r" class="narrow ellipsis" dir="rtl">abcdefghij0123456789abcdefghij</div>
+<div id="c" class="narrow clip">abcdefghij0123456789abcdefghij</div>
+<div id="v" class="narrow vis ellipsis">abcdefghij0123456789abcdefghij</div>
+<script>
+"use strict";
+const text = "abcdefghij0123456789abcdefghij";
+test(() => {
+  // The ellipsis fits inside the box: no scrollable overflow remains,
+  // while the DOM text is untouched and fully selectable.
+  const e = document.getElementById("e");
+  assert_less_than_equal(e.scrollWidth, e.clientWidth + 1, "ellipsis contains the overflow");
+  assert_equals(e.textContent, text, "DOM text untouched");
+  getSelection().selectAllChildren(e);
+  assert_equals(getSelection().toString(), text, "full text still selected");
+  getSelection().removeAllRanges();
+}, "ellipsis truncates the overflow but keeps the text");
+
+test(() => {
+  // RTL mirror: the marker goes at the visual left = logical end.
+  const r = document.getElementById("r");
+  assert_less_than_equal(r.scrollWidth, r.clientWidth + 1, "rtl ellipsis contains the overflow");
+  assert_equals(r.textContent, text, "rtl DOM text untouched");
+}, "rtl ellipsis mirrors");
+
+test(() => {
+  // Controls: clip keeps overflowing; visible gets no ellipsis.
+  const c = document.getElementById("c");
+  assert_greater_than(c.scrollWidth, c.clientWidth, "clip still overflows");
+  const v = document.getElementById("v");
+  assert_greater_than(v.scrollWidth, v.clientWidth, "visible gets no ellipsis");
+}, "clip and visible controls unchanged");
+</script>
+</body>
+</html>

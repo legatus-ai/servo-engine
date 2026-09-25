@@ -20,6 +20,7 @@ use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::execcommand::commands::backcolor::execute_backcolor_command;
 use crate::dom::execcommand::commands::bold::execute_bold_command;
+use crate::dom::execcommand::commands::copy::execute_copy_command;
 use crate::dom::execcommand::commands::createlink::execute_createlink_command;
 use crate::dom::execcommand::commands::defaultparagraphseparator::execute_default_paragraph_separator_command;
 use crate::dom::execcommand::commands::delete::execute_delete_command;
@@ -38,6 +39,7 @@ use crate::dom::execcommand::commands::insertparagraph::execute_insert_paragraph
 use crate::dom::execcommand::commands::inserttext::execute_insert_text_command;
 use crate::dom::execcommand::commands::italic::execute_italic_command;
 use crate::dom::execcommand::commands::removeformat::execute_removeformat_command;
+use crate::dom::execcommand::commands::selectall::execute_select_all_command;
 use crate::dom::execcommand::commands::strikethrough::execute_strikethrough_command;
 use crate::dom::execcommand::commands::stylewithcss::execute_style_with_css_command;
 use crate::dom::execcommand::commands::subscript::execute_subscript_command;
@@ -738,6 +740,7 @@ impl CommandName {
         let result = match self {
             CommandName::BackColor => execute_backcolor_command(cx, document, selection, value),
             CommandName::Bold => execute_bold_command(cx, document, selection),
+            CommandName::Copy => execute_copy_command(cx, document, selection),
             CommandName::CreateLink => execute_createlink_command(cx, document, selection, value),
             CommandName::DefaultParagraphSeparator => {
                 execute_default_paragraph_separator_command(document, value)
@@ -764,6 +767,7 @@ impl CommandName {
             CommandName::InsertText => execute_insert_text_command(cx, document, selection, value),
             CommandName::Italic => execute_italic_command(cx, document, selection),
             CommandName::RemoveFormat => execute_removeformat_command(cx, document, selection),
+            CommandName::SelectAll => execute_select_all_command(cx, document, selection),
             CommandName::Strikethrough => execute_strikethrough_command(cx, document, selection),
             CommandName::StyleWithCss => execute_style_with_css_command(document, value),
             CommandName::Subscript => execute_subscript_command(cx, document, selection),
