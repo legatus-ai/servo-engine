@@ -118,9 +118,10 @@ pub use crate::webview::{WebView, WebViewBuilder};
 pub use crate::webview_delegate::{
     AlertDialog, AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest,
     ColorPicker, ConfirmDialog, ContextMenu, CreateNewWebViewRequest, DownloadRequest,
-    EmbedderControl, FilePicker, InputMethodControl, NavigationRequest, PendingLoadFailure,
+    EmbedderControl, FilePicker, InputMethodControl, NavigationRequest,
     PermissionRequest, PromptDialog, SelectElement, SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
+pub use embedder_traits::PendingLoadFailure;
 #[cfg(feature = "test-registration-gate")]
 pub use script::registration_gate;
 

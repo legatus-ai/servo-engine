@@ -61,3 +61,82 @@ fn attachment_filename(disposition: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    //! Row #9 regression pin (Ref BRO-53): the decision table row #10's
+    //! script-thread changes must not disturb. Pure function — no Servo
+    //! instance, runs in the `servo-script` unit suite.
+
+    use super::{DownloadIntent, recognise_download};
+
+    #[test]
+    fn attachment_with_filename_is_a_download() {
+        assert_eq!(
+            recognise_download(
+                Some("attachment; filename=\"report.bin\""),
+                false,
+                "application/octet-stream",
+                true,
+            ),
+            DownloadIntent::Download {
+                filename: Some("report.bin".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn attachment_without_filename_is_a_download_without_name() {
+        assert_eq!(
+            recognise_download(Some("attachment"), false, "text/csv", true),
+            DownloadIntent::Download { filename: None }
+        );
+    }
+
+    #[test]
+    fn octet_stream_without_disposition_is_a_download() {
+        assert_eq!(
+            recognise_download(None, false, "application/octet-stream", true),
+            DownloadIntent::Download { filename: None }
+        );
+    }
+
+    #[test]
+    fn anchor_download_flag_is_a_download() {
+        assert_eq!(
+            recognise_download(None, true, "text/html", true),
+            DownloadIntent::Download { filename: None }
+        );
+    }
+
+    #[test]
+    fn plain_document_proceeds() {
+        assert_eq!(
+            recognise_download(None, false, "text/html", true),
+            DownloadIntent::Proceed
+        );
+    }
+
+    #[test]
+    fn inline_disposition_proceeds() {
+        assert_eq!(
+            recognise_download(Some("inline; filename=\"view.html\""), false, "text/html", true),
+            DownloadIntent::Proceed
+        );
+    }
+
+    #[test]
+    fn subresource_never_parks() {
+        // Attachments and octet-streams below the top-level navigation
+        // must not park: only document loads consult the embedder.
+        assert_eq!(
+            recognise_download(
+                Some("attachment; filename=\"report.bin\""),
+                false,
+                "application/octet-stream",
+                false,
+            ),
+            DownloadIntent::Proceed
+        );
+    }
+}
