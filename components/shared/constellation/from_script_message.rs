@@ -145,6 +145,11 @@ pub struct LoadData {
 
     /// If this request is for the initial about:blank document.
     pub is_initial_about_blank: bool,
+    /// Row #9b (Ref BRO-53): the navigation was initiated by an
+    /// `<a download>` hyperlink. Threaded from `follow_hyperlink` so the
+    /// download decision can honor the attribute even when the response
+    /// itself carries no `Content-Disposition: attachment`.
+    pub anchor_download: bool,
 }
 
 impl LoadData {
@@ -185,6 +190,7 @@ impl LoadData {
             creation_sandboxing_flag_set,
             container_document_encoding: None,
             is_initial_about_blank: false,
+            anchor_download: false,
         }
     }
 
