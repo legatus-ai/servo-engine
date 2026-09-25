@@ -82,10 +82,12 @@ const PAGE: &str = r#"<!DOCTYPE html>
 <a id="dl" href="/file" download>download</a>
 <a id="plain" href="/file">plain link</a>
 <a id="dl-text" href="/notes" download>notes</a>
+<a id="article" href="/article">article</a>
 </body></html>"#;
 
-/// Serve the page, an attachment octet-stream at /file, and a plain
-/// text (non-attachment) response at /notes.
+/// Serve the page, an attachment octet-stream at /file, a plain
+/// text (non-attachment) response at /notes, and a plain text/html
+/// (non-attachment) page at /article.
 fn serve_test_site() -> (net::test_util::Server, url::Url) {
     let handler =
         move |request: HyperRequest<Incoming>,
@@ -108,6 +110,13 @@ fn serve_test_site() -> (net::test_util::Server, url::Url) {
                         HeaderValue::from_static("text/plain"),
                     );
                     *response.body_mut() = make_body(b"just notes".to_vec());
+                },
+                "/article" => {
+                    response.headers_mut().insert(
+                        "content-type",
+                        HeaderValue::from_static("text/html"),
+                    );
+                    *response.body_mut() = make_body(b"<title>article</title>plain page".to_vec());
                 },
                 _ => {
                     *response.body_mut() = make_body(PAGE.as_bytes().to_vec());
@@ -141,11 +150,12 @@ fn click(servo_test: &ServoTest, webview: &WebView, id: &str) {
     .expect("click script runs");
 }
 
-/// All three download scenarios in ONE test: `Servo::new` initializes the
-/// process-global `Opts` exactly once, so a second `ServoTest::new` in the
-/// same binary panics with "Already initialized". One `Servo` instance
-/// serves all scenarios; each gets a fresh delegate, server-side paths
-/// are shared, and each scenario builds its own `WebView`.
+/// All three download scenarios plus a normal-navigation guard in ONE
+/// test: `Servo::new` initializes the process-global `Opts` exactly once,
+/// so a second `ServoTest::new` in the same binary panics with "Already
+/// initialized". One `Servo` instance serves all scenarios; each gets a
+/// fresh delegate, server-side paths are shared, and each scenario builds
+/// its own `WebView`.
 ///
 /// The r27 case: `<a download>` to an attachment octet-stream.
 /// The page must be kept and `request_download` must fire with the
@@ -214,6 +224,26 @@ fn hyperlink_downloads_park_and_report() {
         assert_eq!(downloads[0].1.as_deref(), Some("report.bin"));
         assert_eq!(history_len(&delegate), 1);
         assert_eq!(webview.url().as_ref(), Some(&page));
+    }
+
+    // Scenario 4: normal navigation guard — a plain link (no `download`
+    // attribute) to a text/html page with no Content-Disposition must NOT
+    // be parked. It navigates normally: no download fires and history
+    // grows to the initial commit plus the new one.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "article");
+        let article = page.join("article").expect("article url joins");
+        spin_until(
+            &servo_test,
+            "article navigation commit",
+            Duration::from_secs(30),
+            || history_len(&delegate) == 2,
+        );
+        assert_eq!(download_count(&delegate), 0);
+        assert_eq!(history_len(&delegate), 2);
+        assert_eq!(webview.url().as_ref(), Some(&article));
     }
 
     let _ = server.close();

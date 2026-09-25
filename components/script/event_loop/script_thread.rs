@@ -4184,6 +4184,10 @@ impl ScriptThread {
                     Referrer::Client(url) | Referrer::ReferrerUrl(url) => Some(url.clone()),
                     Referrer::NoReferrer => None,
                 };
+                // NOTE: this frame_url comes from the referrer, so under the
+                // referrer policy it can be origin-only or None even when the
+                // frame has a full URL. The embedder must treat it as a hint
+                // identifying the originating frame, not as the frame's URL.
                 (
                     load.webview_id,
                     frame_url,
