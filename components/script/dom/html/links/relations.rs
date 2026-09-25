@@ -487,7 +487,7 @@ pub(crate) fn follow_hyperlink(
         //          with referrerPolicy set to referrerPolicy, userInvolvement set to
         //          userInvolvement, and sourceElement set to subject.
         let secure = target_window.as_global_scope().is_secure_context();
-        let load_data = LoadData::new(
+        let mut load_data = LoadData::new(
             LoadOrigin::Script(document.origin().snapshot()),
             url,
             document.about_base_url(),
@@ -499,6 +499,10 @@ pub(crate) fn follow_hyperlink(
             document.has_trustworthy_ancestor_origin(),
             document.creation_sandboxing_flag_set_considering_parent_iframe(),
         );
+        // Row #9b (Ref BRO-53): thread the `<a download>` attribute into
+        // the navigation so the download decision in the (possibly new)
+        // pipeline can honor it; resolves the row #9 follow-up TODO.
+        load_data.anchor_download = subject.has_attribute(&local_name!("download"));
         let target = Trusted::new(target_window);
         let task = task!(navigate_follow_hyperlink: move |cx| {
             debug!("following hyperlink to {}", load_data.url);
