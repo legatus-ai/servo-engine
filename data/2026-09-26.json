@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-26",
+  "fork_sha": "4cfa8189adba49de3f48c5b534568c19c49313e4",
+  "runs": {
+    "fork": {
+      "sha": "4cfa8189adba49de3f48c5b534568c19c49313e4",
+      "areas": {
+        "selection": {
+          "pass": 34189,
+          "total": 34419,
+          "pct": 99.33
+        },
+        "editing": {
+          "pass": 0,
+          "total": 0,
+          "pct": null
+        },
+        "css-overflow": {
+          "pass": 597,
+          "total": 1169,
+          "pct": 51.07
+        },
+        "range-geometry": {
+          "pass": 0,
+          "total": 0,
+          "pct": null
+        },
+        "downloads": {
+          "pass": 0,
+          "total": 0,
+          "pct": null
+        },
+        "user-activation": {
+          "pass": 0,
+          "total": 0,
+          "pct": null
+        }
+      }
+    },
+    "upstream": {
+      "run_id": 5089851975401472,
+      "version": "Servo 0.6.0-d05154e2b",
+      "revision": "59e94f7725",
+      "areas": {
+        "selection": {
+          "pass": 34130,
+          "total": 34419,
+          "pct": 99.16
+        },
+        "editing": {
+          "pass": 91928,
+          "total": 115799,
+          "pct": 79.39
+        },
+        "css-overflow": {
+          "pass": 594,
+          "total": 1186,
+          "pct": 50.08
+        },
+        "range-geometry": {
+          "pass": 1453,
+          "total": 2211,
+          "pct": 65.72
+        },
+        "downloads": {
+          "pass": 1586,
+          "total": 1620,
+          "pct": 97.9
+        },
+        "user-activation": {
+          "pass": 36,
+          "total": 47,
+          "pct": 76.6
+        }
+      }
+    },
+    "chrome": {
+      "run_id": 5147945233285120,
+      "version": "156.0.8075.0",
+      "revision": "647d3bdf13",
+      "areas": {
+        "selection": {
+          "pass": 34359,
+          "total": 34420,
+          "pct": 99.82
+        },
+        "editing": {
+          "pass": 108020,
+          "total": 116617,
+          "pct": 92.63
+        },
+        "css-overflow": {
+          "pass": 1129,
+          "total": 1196,
+          "pct": 94.4
+        },
+        "range-geometry": {
+          "pass": 2448,
+          "total": 2611,
+          "pct": 93.76
+        },
+        "downloads": {
+          "pass": 1620,
+          "total": 1632,
+          "pct": 99.26
+        },
+        "user-activation": {
+          "pass": 41,
+          "total": 47,
+          "pct": 87.23
+        }
+      }
+    }
+  }
+}
