@@ -37,7 +37,7 @@ use hyper::{Request as HyperRequest, Response as HyperResponse};
 use net::test_util::{make_body, make_server};
 use servo::{
     ClipboardDelegate, DevicePoint, InputEvent, JSValue, Key, KeyState, KeyboardEvent,
-    LoadStatus, MouseButton, WebView, WebViewBuilder, WebViewDelegate,
+    LoadStatus, MouseButton, Preferences, WebView, WebViewBuilder, WebViewDelegate,
 };
 
 const PAGE_TEXT: &str = "row11-activation-probe";
@@ -147,7 +147,15 @@ fn embedder_input_produces_transient_activation() {
             *response.body_mut() = make_body(MESSAGE.to_vec());
         };
     // Note: the engine must be created BEFORE the test server (see pending_load.rs).
-    let servo_test = ServoTest::new();
+    // execCommand is pref-gated off by default; the test enables it the way
+    // an embedder shipping the editing feature would.
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.network_http_proxy_uri = String::new();
+        preferences.network_https_proxy_uri = String::new();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
     let (server, url) = make_server(handler);
     let page_url = url.as_url().clone();
 
