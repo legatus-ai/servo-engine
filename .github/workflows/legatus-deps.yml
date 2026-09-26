@@ -1,0 +1,27 @@
+# Legatus: dependency-resolution gate for PRs into `legatus`.
+# Upstream's Main workflow cannot start on this fork (startup_failure), so
+# nothing else on a PR proves that Cargo can load every dependency source.
+# This job does exactly that, cheaply: resolve the whole workspace against
+# the committed Cargo.lock (fetching git sources such as the rust-url and
+# stylo forks) without compiling anything. A path-only [patch] entry, or a
+# lockfile that does not match Cargo.toml, fails here instead of 5 minutes
+# into a nightly scoreboard build.
+name: Legatus dependency resolution
+
+on:
+  pull_request:
+    branches: [legatus]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve dependencies (locked)
+        run: cargo metadata --locked --format-version 1 > /dev/null
