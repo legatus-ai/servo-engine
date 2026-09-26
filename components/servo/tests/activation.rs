@@ -164,17 +164,30 @@ fn embedder_input_produces_transient_activation() {
     );
 
     // Select the probe text so execCommand('copy') has something to copy.
+    // Note: insertAdjacentHTML (NOT innerHTML +=) — the latter reparses
+    // body content, destroying the button and its click listener.
     let selected = eval_string(
         &servo_test,
         &webview,
         &format!(
-            "document.body.innerHTML += '<p id=probe>{PAGE_TEXT}</p>'; \
+            "document.body.insertAdjacentHTML('beforeend', '<p id=probe>{PAGE_TEXT}</p>'); \
              const r = document.createRange(); \
              r.selectNodeContents(document.getElementById('probe')); \
              getSelection().removeAllRanges(); getSelection().addRange(r); 'selected'"
         ),
     );
     assert_eq!(selected, "selected");
+
+    // Sanity: the button must be where the click will land (CSS px).
+    let rect = eval_string(
+        &servo_test,
+        &webview,
+        "JSON.stringify(document.getElementById('copyBtn').getBoundingClientRect())",
+    );
+    assert!(
+        rect.contains("\"x\":10") && rect.contains("\"y\":10"),
+        "button must sit at (10,10), got {rect}"
+    );
 
     // PHASE 0 (control): no gesture yet — transient activation must be absent.
     let is_active_before = eval_string(
