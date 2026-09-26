@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use embedder_traits::{RefreshDriver, UrlRequest};
@@ -353,6 +354,25 @@ fn test_cursor_unchanged_input_color() {
     assert_eq!(webview.cursor(), Cursor::Default);
 }
 
+/// Spin the event loop until `condition` holds, panicking after `timeout`
+/// instead of hanging the harness forever.
+fn spin_until(
+    servo_test: &ServoTest,
+    timeout: Duration,
+    description: &str,
+    condition: impl Fn() -> bool,
+) {
+    let start = Instant::now();
+    while !condition() {
+        servo_test.servo().spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for {description}"
+        );
+    }
+}
+
 /// A test that ensure that negative resize requests do not get passed to the embedder.
 #[test]
 fn test_negative_resize_to_request() {
@@ -361,9 +381,14 @@ fn test_negative_resize_to_request() {
         rendering_context: Rc<dyn RenderingContext>,
         popup: RefCell<Option<WebView>>,
         resize_request: Cell<Option<DeviceIntSize>>,
+        frame_ready: Cell<bool>,
     }
 
     impl WebViewDelegate for WebViewResizeTestDelegate {
+        fn notify_new_frame_ready(&self, _webview: WebView) {
+            self.frame_ready.set(true);
+        }
+
         fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
             let webview = request
                 .builder(self.rendering_context.clone())
@@ -381,23 +406,73 @@ fn test_negative_resize_to_request() {
         rendering_context: servo_test.rendering_context.clone(),
         popup: None.into(),
         resize_request: None.into(),
+        frame_ready: Cell::new(false),
     });
 
+    // Note: the button id must not be "open" — that named property shadows
+    // window.open() on the page, so the click listener would throw instead
+    // of opening a popup.
     let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
         .delegate(delegate.clone())
         .url(
             Url::parse(
-                "data:text/html,<!DOCTYPE html><script>\
-                    let popup = window.open('about:blank');\
-                    popup.resizeTo(-100, -100);\
-                </script></body>",
+                "data:text/html,<!DOCTYPE html><body>\
+                    <button id=openBtn>open</button>\
+                    <script>\
+                        document.getElementById('openBtn').addEventListener('click', () => window.open('about:blank'));\
+                    </script></body>",
             )
             .unwrap(),
         )
         .build();
 
     let load_webview = webview.clone();
-    let _ = servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "opener page to finish loading",
+        move || load_webview.load_status() == LoadStatus::Complete,
+    );
+
+    // Force at least one new frame (proves layout is done and hit-testing is
+    // live) via rAF + frame notification — cheaper than a screenshot
+    // round-trip, and no pixels are needed here.
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "requestAnimationFrame(() => { \
+           document.body.style.background = 'red'; \
+           document.body.style.background = 'green'; \
+        });",
+    );
+    let delegate_clone = delegate.clone();
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "first frame after load",
+        move || delegate_clone.frame_ready.get(),
+    );
+
+    // Fail fast instead of hanging if the click point ever stops landing on
+    // the button.
+    let hit = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.elementFromPoint(10, 10) && document.elementFromPoint(10, 10).id",
+    );
+    assert_eq!(hit, Ok(JSValue::String("openBtn".into())));
+
+    // The popup blocker requires transient activation, so open the popup
+    // with a real click instead of unconditionally from script.
+    click_at_point(&webview, Point2D::new(10., 10.), MouseButton::Primary);
+
+    let delegate_clone = delegate.clone();
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "popup to be created",
+        move || delegate_clone.popup.borrow().is_some(),
+    );
 
     let popup = delegate
         .popup
@@ -406,7 +481,21 @@ fn test_negative_resize_to_request() {
         .expect("Should have created popup");
 
     let load_webview = popup.clone();
-    let _ = servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "popup page to finish loading",
+        move || load_webview.load_status() == LoadStatus::Complete,
+    );
+
+    let _ = evaluate_javascript(&servo_test, popup.clone(), "window.resizeTo(-100, -100)");
+    let delegate_clone = delegate.clone();
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "resize request to arrive",
+        move || delegate_clone.resize_request.get().is_some(),
+    );
 
     // Resize requests should be floored to 1.
     assert_eq!(

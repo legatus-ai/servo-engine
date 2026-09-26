@@ -436,6 +436,9 @@ impl ContextMenuNodes {
                 cx,
                 DOMString::from_static("_blank"),
                 true, /* noopener */
+                // The user explicitly requested this through embedder UI, so it
+                // bypasses the popup blocker.
+                true, /* bypass_popup_blocker */
             );
             let Some(browsing_context) = browsing_context else {
                 return;
