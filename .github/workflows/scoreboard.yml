@@ -25,6 +25,12 @@ concurrency:
   group: scoreboard
   cancel-in-progress: false
 
+# Least privilege: read-only by default. Artifact upload/download needs
+# `actions: write` (granted per job below); pushing the scoreboard branch
+# needs `contents: write` (publish step only).
+permissions:
+  contents: read
+
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
@@ -38,14 +44,28 @@ jobs:
       count: ${{ steps.ids.outputs.count }}
     steps:
       - id: ids
+        # Inputs reach the shell only through env (never `${{ }}` in `run:`),
+        # then are validated: chunks is an integer 1..16, subsets may only
+        # contain path characters, so the later unquoted expansion is safe.
+        env:
+          CHUNKS: ${{ inputs.chunks || '4' }}
+          WPT_SUBSETS: ${{ inputs.wpt-subsets || '' }}
         run: |
-          N="${{ inputs.chunks || '4' }}"
-          echo "chunks=$(seq 1 "$N" | jq -R . | jq -s -c 'map(tonumber)')" >> "$GITHUB_OUTPUT"
-          echo "count=$N" >> "$GITHUB_OUTPUT"
+          case "$CHUNKS" in
+            ''|*[!0-9]*|0*) echo "chunks must be an integer 1..16, got '$CHUNKS'"; exit 1;;
+          esac
+          if [ "$CHUNKS" -gt 16 ]; then echo "chunks must be 1..16, got '$CHUNKS'"; exit 1; fi
+          case "$WPT_SUBSETS" in
+            *[!A-Za-z0-9_./\ -]*) echo "wpt-subsets has illegal characters: '$WPT_SUBSETS'"; exit 1;;
+          esac
+          echo "chunks=$(seq 1 "$CHUNKS" | jq -R . | jq -s -c 'map(tonumber)')" >> "$GITHUB_OUTPUT"
+          echo "count=$CHUNKS" >> "$GITHUB_OUTPUT"
 
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    permissions:
+      actions: write
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
@@ -100,6 +120,8 @@ jobs:
     needs: [setup, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+    permissions:
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +155,11 @@ jobs:
       - name: Unpack binary
         run: tar -xzf servo-tech-demo.tar.gz
       - name: Run WPT shard
+        # Unquoted on purpose: validated in setup (path chars only), and the
+        # subsets must word-split into separate test paths.
+        # shellcheck disable=SC2086
+        env:
+          WPT_SUBSETS: ${{ inputs.wpt-subsets || '' }}
         run: |
           nproc=$(nproc)
           ./mach test-wpt \
@@ -141,7 +168,7 @@ jobs:
             --processes "$nproc" --timeout-multiplier 2 \
             --total-chunks ${{ needs.setup.outputs.count }} --this-chunk ${{ matrix.chunk_id }} \
             --log-wptreport wptreport-${{ matrix.chunk_id }}.json \
-            ${{ inputs.wpt-subsets || '' }}
+            $WPT_SUBSETS
       - name: Upload shard report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
@@ -156,6 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Checkout legatus (generator)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
