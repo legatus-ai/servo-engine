@@ -173,26 +173,20 @@ jobs:
           WPT_SUBSETS: ${{ inputs.wpt-subsets || '' }}
         # The scoreboard measures; it does not gate. mach exits 1 whenever any
         # result differs from upstream's expectation files, which the fork's
-        # own improvements always cause. Accept exit 1 when the shard wrote a
-        # report with results; any other code, or no report, stays a failure.
+        # own improvements always cause. --always-succeed zeroes only that
+        # test-result code (harness exceptions still fail), and the shard
+        # must still have written a report with results.
         run: |
           nproc=$(nproc)
           report=wptreport-${{ matrix.chunk_id }}.json
-          set +e
           ./mach test-wpt \
             --bin servo/servoshell \
-            --release --headless \
+            --release --headless --always-succeed \
             --processes "$nproc" --timeout-multiplier 2 \
             --total-chunks ${{ needs.setup.outputs.count }} --this-chunk ${{ matrix.chunk_id }} \
             --log-wptreport "$report" \
             $WPT_SUBSETS
-          rc=$?
-          set -e
-          if [ "$rc" -eq 1 ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("results") else 1)' "$report"; then
-            echo "::notice::Shard ${{ matrix.chunk_id }}: unexpected results vs upstream expectations (recorded in the scoreboard, not a failure)."
-            rc=0
-          fi
-          exit "$rc"
+          python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("results") else "empty WPT report: " + sys.argv[1])' "$report"
       - name: Upload shard report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
