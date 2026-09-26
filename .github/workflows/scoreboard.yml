@@ -189,8 +189,10 @@ jobs:
           if-no-files-found: error
 
   scoreboard:
-    needs: [wpt]
-    if: ${{ !cancelled() }}
+    needs: [build, wpt]
+    # No build means no WPT reports: skip instead of failing on an empty set.
+    # Partial shard failures after a good build still publish what ran.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -203,9 +205,8 @@ jobs:
           sparse-checkout: scoreboard
           sparse-checkout-cone-mode: false
       - name: Download shard reports
-        # No shard reports exist when build/wpt failed early; the next step
-        # turns that into a clean skip instead of a generator traceback.
-        continue-on-error: true
+        # A real download failure stays fatal; an empty report set (every
+        # shard died before writing one) is a clean skip in the next step.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: wptreport-*
