@@ -813,6 +813,22 @@ pub enum LoadStatus {
     Complete,
 }
 
+/// Why a parked top-level load never committed (row #10, Ref BRO-53).
+/// Carried by the constellation's `PendingLoadFailed` message to the
+/// embedder's `notify_pending_load_failed` delegate method instead of
+/// a silent log.
+///
+/// A close in the gap is deliberately NOT a variant: `CloseWebView`
+/// is only ever sent from `WebViewInner::drop`, so by the time the
+/// constellation could report it no embedder handle remains to
+/// receive it. A closed webview's parked slot is dropped silently
+/// (debug-logged) instead.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PendingLoadFailure {
+    /// The registration bound expired with no browsing context.
+    Expired,
+}
+
 /// Data that could be used to display a desktop notification to the end user
 /// when the [Notification API](<https://notifications.spec.whatwg.org/#notifications>) is called.
 #[derive(Clone, Debug, Deserialize, Serialize)]

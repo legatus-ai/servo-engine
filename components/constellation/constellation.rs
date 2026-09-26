@@ -93,6 +93,7 @@ use std::mem::replace;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use std::{process, thread};
 
 use background_hang_monitor_api::{
@@ -112,8 +113,9 @@ use embedder_traits::{
     GenericEmbedderProxy, InputEvent, InputEventAndId, InputEventOutcome, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
     MediaSessionEvent, MediaSessionPlaybackState, MouseButtonAction, MouseButtonEvent,
-    NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
-    WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
+    NewWebViewDetails, PaintHitTestResult, PendingLoadFailure, Theme, UrlRequest,
+    ViewportDetails, WakeLockDelegate, WakeLockType, WebDriverCommandMsg, WebDriverLoadStatus,
+    WebDriverScriptCommand,
 };
 use euclid::default::Size2D as UntypedSize2D;
 use fonts::SystemFontServiceProxy;
@@ -161,7 +163,7 @@ use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, AuxiliaryWebViewCreationResponse, ConstellationInterest,
     DownloadReport, EmbedderToConstellationMessage, HistoryTraversalSource, IFrameLoadInfo, IFrameLoadInfoWithData,
     IFrameSizeMsg, LoadData, LogEntry, MessagePortMsg, NavigationHistoryBehavior, PaintMetricEvent,
-    PortMessageTask, PortTransferInfo, RemoteFocusOperation, SWManagerSenders,
+    PendingLoad, PendingLoads, PortMessageTask, PortTransferInfo, RemoteFocusOperation, SWManagerSenders,
     ScreenshotReadinessResponse, ScriptToConstellationMessage, ScrollStateUpdate,
     ServiceWorkerAlgorithm, ServiceWorkerManagerFactory, ServiceWorkerMsg,
     SessionHistoryTraversalRequest, StructuredSerializedData, TargetSnapshotParams,
@@ -197,6 +199,37 @@ struct PendingApprovalNavigation {
 }
 
 type PendingApprovalNavigations = FxHashMap<PipelineId, PendingApprovalNavigation>;
+
+/// How long a parked top-level load waits for its browsing context to
+/// register before the constellation fails it visibly (row #10,
+/// Ref BRO-53). Clears the observed 22 s worst case under full load
+/// with margin; the wait uses a deadline (§3 of the design note) so
+/// the bound fires even on an otherwise idle engine.
+const PENDING_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Effective park bound. Integration tests shorten it through
+/// `SERVO_PENDING_LOAD_TIMEOUT_SECS`, honoured only in builds with the
+/// `test-registration-gate` cargo feature; feature builds without the
+/// variable use a short default so the expiry tests stay fast (the test
+/// helper reads the same variable with the same default — see
+/// `components/servo/tests/pending_load.rs`). Every other build,
+/// including production, always uses [`PENDING_LOAD_TIMEOUT`]. This is
+/// the injectable seam the review asked for: tests never wait 30 s, and
+/// no test hook exists outside the feature gate.
+fn pending_load_timeout() -> Duration {
+    #[cfg(feature = "test-registration-gate")]
+    if let Ok(secs) = std::env::var("SERVO_PENDING_LOAD_TIMEOUT_SECS") {
+        if let Ok(secs) = secs.parse::<u64>() {
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    #[cfg(feature = "test-registration-gate")]
+    return Duration::from_secs(5);
+    #[cfg(not(feature = "test-registration-gate"))]
+    PENDING_LOAD_TIMEOUT
+}
 
 #[derive(Debug)]
 /// The state used by MessagePortInfo to represent the various states the port can be in.
@@ -469,6 +502,11 @@ pub struct Constellation<STF, SWF> {
     /// the script thread that parked the load (row #9, Ref BRO-53).
     pending_download_decisions: HashMap<DownloadId, PipelineId>,
 
+    /// Top-level loads parked while their browsing context is not yet
+    /// registered, by webview (row #10, Ref BRO-53). Drained on
+    /// registration, failed visibly on the bound.
+    pending_loads: PendingLoads,
+
     /// Bitmask which indicates which combination of mouse buttons are
     /// currently being pressed.
     pressed_mouse_buttons: MouseButtons,
@@ -725,6 +763,7 @@ where
                     canvas: OnceCell::new(),
                     pending_approval_navigations: Default::default(),
                     pending_download_decisions: Default::default(),
+                    pending_loads: Default::default(),
                     pressed_mouse_buttons: MouseButtons::empty(),
                     active_keyboard_modifiers: Modifiers::empty(),
                     hard_fail,
@@ -1195,6 +1234,14 @@ where
         self.browsing_contexts
             .insert(browsing_context_id, browsing_context);
 
+        // Row #10 (Ref BRO-53): the parked drain lives at the end of
+        // `handle_activate_document_msg`, after activity update and
+        // `HistoryChanged`. Registration itself is held open by the
+        // script-side gate (`registration_gate`, test feature only),
+        // which blocks the pipeline before `ActivateDocument` without
+        // stalling this thread, so `close()` and expiry still interleave
+        // with a held-open gap.
+
         // If this context is a nested container, attach it to parent pipeline.
         if let Some(parent_pipeline_id) = parent_pipeline_id &&
             let Some(parent) = self.pipelines.get_mut(&parent_pipeline_id)
@@ -1227,49 +1274,66 @@ where
         // produces undefined behaviour, resulting in the destructor
         // being called. If this happens, there's not much we can do
         // other than panic.
-        let mut sel = Select::new();
-        sel.recv(&self.namespace_receiver);
-        sel.recv(&self.script_receiver);
-        sel.recv(&self.background_hang_monitor_receiver);
-        sel.recv(&self.embedder_to_constellation_receiver);
+        //
+        // Row #10 (Ref BRO-53): the select lives in its own scope
+        // and yields an owned request, so that every channel borrow
+        // ends before the expiry sweep below takes `&mut`.
+        let maybe_request = {
+            let _span = profile_traits::trace_span!("handle_request::select").entered();
+            let mut sel = Select::new();
+            sel.recv(&self.namespace_receiver);
+            sel.recv(&self.script_receiver);
+            sel.recv(&self.background_hang_monitor_receiver);
+            sel.recv(&self.embedder_to_constellation_receiver);
 
-        #[cfg(feature = "multiprocess")]
-        self.process_manager.register(&mut sel);
+            #[cfg(feature = "multiprocess")]
+            self.process_manager.register(&mut sel);
 
-        let request = {
-            let oper = {
-                let _span = profile_traits::trace_span!("handle_request::select").entered();
-                sel.select()
+            // While a load is parked, wait with a deadline so the bound
+            // fires even with no other traffic; on timeout there is no
+            // operation to receive from.
+            let oper = match self.pending_loads.earliest_deadline() {
+                Some(deadline) => sel.select_deadline(deadline).ok(),
+                None => Some(sel.select()),
             };
-            let index = oper.index();
-
-            match index {
-                0 => oper
-                    .recv(&self.namespace_receiver)
-                    .expect("Unexpected script channel panic in constellation")
-                    .map(Request::PipelineNamespace),
-                1 => oper
-                    .recv(&self.script_receiver)
-                    .expect("Unexpected script channel panic in constellation")
-                    .map(Request::Script),
-                2 => oper
-                    .recv(&self.background_hang_monitor_receiver)
-                    .expect("Unexpected BHM channel panic in constellation")
-                    .map(Request::BackgroundHangMonitor),
-                3 => Ok(Request::Embedder(
-                    oper.recv(&self.embedder_to_constellation_receiver)
-                        .expect("Unexpected embedder channel panic in constellation"),
-                )),
-                _ => {
-                    // This can only be a error reading on a closed lifeline receiver.
-                    let process_index = index - 4;
-                    #[cfg(feature = "multiprocess")]
-                    let _ = oper.recv(self.process_manager.receiver_at(process_index));
-                    Ok(Request::RemoveProcess(process_index))
-                },
-            }
+            oper.map(|oper| {
+                let index = oper.index();
+                match index {
+                    0 => oper
+                        .recv(&self.namespace_receiver)
+                        .expect("Unexpected script channel panic in constellation")
+                        .map(Request::PipelineNamespace),
+                    1 => oper
+                        .recv(&self.script_receiver)
+                        .expect("Unexpected script channel panic in constellation")
+                        .map(Request::Script),
+                    2 => oper
+                        .recv(&self.background_hang_monitor_receiver)
+                        .expect("Unexpected BHM channel panic in constellation")
+                        .map(Request::BackgroundHangMonitor),
+                    3 => Ok(Request::Embedder(
+                        oper.recv(&self.embedder_to_constellation_receiver)
+                            .expect("Unexpected embedder channel panic in constellation"),
+                    )),
+                    _ => {
+                        // This can only be a error reading on a closed lifeline receiver.
+                        let process_index = index - 4;
+                        #[cfg(feature = "multiprocess")]
+                        let _ = oper.recv(self.process_manager.receiver_at(process_index));
+                        Ok(Request::RemoveProcess(process_index))
+                    },
+                }
+            })
+            // `sel` and the selected operation drop here; the receiver
+            // borrows end before the sweep below.
         };
 
+        let Some(request) = maybe_request else {
+            // Deadline-wait wake with no traffic: sweep past-due parked
+            // loads, then loop (row #10, Ref BRO-53).
+            self.expire_pending_loads();
+            return;
+        };
         let request = match request {
             Ok(request) => request,
             Err(err) => return error!("Deserialization failed ({}).", err),
@@ -1290,6 +1354,19 @@ where
             Request::RemoveProcess(index) => self.process_manager.remove(index),
             #[cfg(not(feature = "multiprocess"))]
             Request::RemoveProcess(_) => {},
+        }
+
+        // Row #10 (Ref BRO-53): the deadline wait only fires when the
+        // engine is idle. Under steady traffic a due load would
+        // otherwise slip its bound, so sweep after every handled
+        // request too. `earliest_deadline` is a min over at most one
+        // slot per webview, so the check is cheap when nothing is due.
+        if self
+            .pending_loads
+            .earliest_deadline()
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            self.expire_pending_loads();
         }
     }
 
@@ -1323,28 +1400,7 @@ where
             // If there is already a pending page (self.pending_changes), it will not be overridden;
             // However, if the id is not encompassed by another change, it will be.
             EmbedderToConstellationMessage::LoadUrl(webview_id, url_request) => {
-                let mut load_data = LoadData::new_for_new_unrelated_webview(url_request.url);
-
-                if !url_request.headers.is_empty() {
-                    load_data.headers.extend(url_request.headers);
-                }
-
-                let ctx_id = BrowsingContextId::from(webview_id);
-                let pipeline_id = match self.browsing_contexts.get(&ctx_id) {
-                    Some(ctx) => ctx.pipeline_id,
-                    None => {
-                        return warn!("{}: LoadUrl for unknown browsing context", webview_id);
-                    },
-                };
-                // Since this is a top-level load, initiated by the embedder, go straight to load_url,
-                // bypassing schedule_navigation.
-                self.load_url(
-                    webview_id,
-                    pipeline_id,
-                    load_data,
-                    NavigationHistoryBehavior::Push,
-                    TargetSnapshotParams::default(),
-                );
+                self.load_top_level_url(webview_id, url_request);
             },
             // Create a new top level browsing context. Will use response_chan to return
             // the browsing context id.
@@ -2670,6 +2726,12 @@ where
         }
         self.shutting_down = true;
 
+        // Row #10 (Ref BRO-53): drop parked loads up front. The teardown
+        // below closes every context, which would otherwise remove or
+        // expire the slots one by one and emit `PendingLoadFailed` noise
+        // for loads that simply never got a page.
+        self.pending_loads.clear();
+
         self.mem_profiler_chan.send(mem::ProfilerMsg::Exit);
 
         // Tell all BHMs to exit, and to ensure their monitored components exit even when currently
@@ -3393,6 +3455,18 @@ where
             }
         }
 
+        // Row #10 (Ref BRO-53): a closed webview will never register,
+        // so drop its parked slot. This is silent by design, not a
+        // `PendingLoadFailed`: `CloseWebView` is only ever sent from
+        // `WebViewInner::drop`, so no embedder handle remains that
+        // could receive the failure.
+        if let Some(parked) = self.pending_loads.remove(webview_id) {
+            debug!(
+                "{}: Dropping parked load {} for closed webview",
+                webview_id, parked.request.url,
+            );
+        }
+
         // Step 4. Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
         self.constellation_to_embedder_proxy
             .send(ConstellationToEmbedderMsg::WebViewClosed(webview_id));
@@ -4113,6 +4187,90 @@ where
                 ),
             );
         }
+    }
+
+    /// Load a new page from a typed url, shared by the `LoadUrl` arm and
+    /// the registration drain so the two cannot diverge (row #10,
+    /// Ref BRO-53).
+    /// If there is already a pending page (self.pending_changes), it will not be overridden;
+    /// However, if the id is not encompassed by another change, it will be.
+    fn load_top_level_url(&mut self, webview_id: WebViewId, url_request: UrlRequest) {
+        let ctx_id = BrowsingContextId::from(webview_id);
+        // Bind in two steps so no map borrow is held across the park path below.
+        let pipeline_id = self
+            .browsing_contexts
+            .get(&ctx_id)
+            .map(|ctx| ctx.pipeline_id);
+        let Some(pipeline_id) = pipeline_id else {
+            // The context is not registered yet. Park for registration
+            // when the webview itself is known (NewWebView was processed;
+            // only the context registration is outstanding). Otherwise
+            // keep today's warn-and-drop: a never-created or closed
+            // webview has nothing whose registration could drain the load.
+            if self.webviews.contains_key(&webview_id) {
+                self.park_load_until_registered(webview_id, url_request);
+            } else {
+                warn!("{}: LoadUrl for unknown browsing context", webview_id);
+            }
+            return;
+        };
+        let mut load_data = LoadData::new_for_new_unrelated_webview(url_request.url);
+
+        if !url_request.headers.is_empty() {
+            load_data.headers.extend(url_request.headers);
+        }
+
+        // Since this is a top-level load, initiated by the embedder, go straight to load_url,
+        // bypassing schedule_navigation.
+        self.load_url(
+            webview_id,
+            pipeline_id,
+            load_data,
+            NavigationHistoryBehavior::Push,
+            TargetSnapshotParams::default(),
+        );
+    }
+
+    /// Park a `LoadUrl` for a known-but-unregistered context (row #10,
+    /// Ref BRO-53). Last-wins: a newer load replaces the parked one,
+    /// logged at debug with both URLs so a trace shows the drop.
+    /// A superseded load is NOT reported to the embedder (note §5):
+    /// only the load in the slot can drain or fail visibly.
+    fn park_load_until_registered(&mut self, webview_id: WebViewId, url_request: UrlRequest) {
+        let new_url = url_request.url.clone();
+        let deadline = Instant::now() + pending_load_timeout();
+        if let Some(replaced) = self
+            .pending_loads
+            .insert(webview_id, url_request, deadline)
+        {
+            debug!(
+                "{}: Replacing parked load {} with {}",
+                webview_id, replaced.request.url, new_url,
+            );
+        }
+    }
+
+    /// Fail parked loads past their registration deadline, telling the
+    /// embedder about each (row #10, Ref BRO-53). Runs after a
+    /// deadline-wait wake with no traffic, so the bound fires even on
+    /// an otherwise idle engine.
+    fn expire_pending_loads(&mut self) {
+        let now = Instant::now();
+        for (webview_id, parked) in self.pending_loads.expired(now) {
+            self.fail_pending_load(webview_id, parked, PendingLoadFailure::Expired);
+        }
+    }
+
+    /// Surface a parked load that will never commit (row #10, Ref BRO-53).
+    fn fail_pending_load(
+        &mut self,
+        webview_id: WebViewId,
+        parked: PendingLoad,
+        reason: PendingLoadFailure,
+    ) {
+        self.constellation_to_embedder_proxy.send(
+            ConstellationToEmbedderMsg::PendingLoadFailed(webview_id, parked.request.url, reason),
+        );
     }
 
     /// Forward a script-reported download to the embedder for its answer,
@@ -5770,6 +5928,18 @@ where
                 &self.browsing_contexts,
                 &self.pipelines,
             );
+        }
+
+        // Row #10 (Ref BRO-53): commit a `LoadUrl` parked while this
+        // top-level context was unregistered. Deferred to the end of
+        // activation, after `change_session_history` (activity update,
+        // focus notify, `HistoryChanged`) and the screenshot-readiness
+        // requests, so the embedder sees the same order as for a direct
+        // load. `take` runs the drain at most once per webview.
+        if parent_pipeline_id.is_none() {
+            if let Some(parked) = self.pending_loads.take_for_registration(webview_id) {
+                self.load_top_level_url(webview_id, parked.request);
+            }
         }
     }
 

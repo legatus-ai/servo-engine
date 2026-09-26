@@ -66,6 +66,9 @@ native-bluetooth = ["servo-bluetooth/native-bluetooth"]
 no-wgl = ["dep:mozangle", "mozangle/egl", "mozangle/build_dlls", "surfman/sm-angle-default", "paint_api/no-wgl"]
 profilemozjs = ["script/profilemozjs"]
 testbinding = ["script/testbinding"]
+# Row #10 test seam (Ref BRO-53): deterministic registration barrier plus
+# timeout override for integration tests. Never enabled in production builds.
+test-registration-gate = ["servo-constellation/test-registration-gate", "script/test-registration-gate"]
 tracing = [
     "dep:tracing",
     "paint/tracing",

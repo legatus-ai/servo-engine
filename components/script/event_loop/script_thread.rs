@@ -1363,10 +1363,20 @@ impl ScriptThread {
         // Receive at least one message so we don't spinloop.
         debug!("Waiting for event.");
         let fully_active = self.get_fully_active_document_ids();
+        // Row #9 retrofit, shared mechanism with row #10's pending
+        // loads (Ref BRO-53): while a download is parked, end the wait
+        // at its deadline so the deny fires even with no other traffic.
+        let parked_deadline = self
+            .parked_downloads
+            .borrow()
+            .values()
+            .map(|parked| parked.deadline)
+            .min();
         let mut event = self.receivers.recv(
             &self.task_queue,
             &self.timer_scheduler.borrow(),
             &fully_active,
+            parked_deadline,
         );
 
         loop {
@@ -3721,6 +3731,15 @@ impl ScriptThread {
             );
         }
 
+        // Row #10 test seam (Ref BRO-53): while the registration gate
+        // is armed, block the pipeline here, before `ActivateDocument`,
+        // so a test holds registration open with the constellation
+        // thread free (`close()` and expiry still interleave with the
+        // held-open gap). Compiled in only with the
+        // `test-registration-gate` cargo feature.
+        #[cfg(feature = "test-registration-gate")]
+        crate::registration_gate::wait_if_armed();
+
         self.senders
             .pipeline_to_constellation_sender
             .send((
@@ -4246,9 +4265,9 @@ impl ScriptThread {
     /// Deny parked downloads whose embedder deadline passed, cancelling
     /// their fetches and telling the constellation to drop the pending
     /// decision (so a late answer warns as unknown and never-answered
-    /// downloads stop accumulating). Runs every event-loop turn (live
-    /// downloads self-wake through their chunk messages); a fully idle
-    /// page with a holding embedder resolves on its next event.
+    /// downloads stop accumulating). Runs every event-loop turn, and the
+    /// wait itself ends at the earliest parked deadline (row #10 shared
+    /// mechanism), so the bound fires even on an otherwise idle page.
     fn deny_expired_downloads(&self) {
         let now = Instant::now();
         let expired: Vec<(DownloadId, WebViewId, PipelineId, RequestId)> = self

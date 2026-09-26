@@ -121,6 +121,9 @@ pub use crate::webview_delegate::{
     EmbedderControl, FilePicker, InputMethodControl, NavigationRequest, PermissionRequest,
     PromptDialog, SelectElement, SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
+pub use embedder_traits::PendingLoadFailure;
+#[cfg(feature = "test-registration-gate")]
+pub use script::registration_gate;
 
 #[cfg(feature = "webxr")]
 pub mod webxr {

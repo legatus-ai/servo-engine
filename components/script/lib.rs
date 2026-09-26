@@ -45,6 +45,8 @@ pub(crate) mod mime;
 pub(crate) mod modules;
 mod navigation;
 mod realms;
+#[cfg(feature = "test-registration-gate")]
+pub mod registration_gate;
 mod routed_promise;
 pub mod test;
 mod unminify;

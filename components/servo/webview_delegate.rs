@@ -10,7 +10,7 @@ use embedder_traits::{
     ConfirmResponse, ConsoleLogLevel, ContextMenuAction, ContextMenuElementInformation,
     ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlResponse, FilePickerRequest,
     FilterPattern, InputEventId, InputEventResult, InputMethodType, LoadStatus, MediaSessionEvent,
-    NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor, ScreenGeometry,
+    NewWebViewDetails, Notification, PendingLoadFailure, PermissionFeature, PromptResponse, RgbColor, ScreenGeometry,
     SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest, TraversalId,
     WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
 };
@@ -989,6 +989,17 @@ pub trait WebViewDelegate {
     /// The `LoadStatus` of the currently loading or loaded page in this [`WebView`] has changed. The new
     /// status can accessed via [`WebView::load_status`].
     fn notify_load_status_changed(&self, _webview: WebView, _status: LoadStatus) {}
+    /// A top-level load the embedder asked for never committed because its
+    /// browsing context did not register before the bound (row #10,
+    /// Ref BRO-53). Stable contract: the runtime maps this to a visible
+    /// page-load error. `LoadStatus` carries no failure, so this is a
+    /// separate notification by design.
+    fn notify_pending_load_failed(
+        &self,
+        _webview: WebView,
+        _url: Url,
+        _reason: PendingLoadFailure,
+    ) {}
     /// The [`Cursor`] of the currently loaded page in this [`WebView`] has changed. The new
     /// cursor can accessed via [`WebView::cursor`].
     fn notify_cursor_changed(&self, _webview: WebView, _cursor: Cursor) {}

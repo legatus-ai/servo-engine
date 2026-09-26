@@ -7,6 +7,7 @@ use core::fmt;
 use std::cell::RefCell;
 use std::option::Option;
 use std::result::Result;
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Select, SelectedOperation, SendError, Sender};
 use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg};
@@ -448,11 +449,15 @@ pub(crate) struct ScriptThreadReceivers {
 impl ScriptThreadReceivers {
     /// Block until a message is received by any of the receivers of this [`ScriptThreadReceivers`]
     /// or the given [`TaskQueue`] or [`TimerScheduler`]. Return the first message received.
+    /// `parked_deadline` is the earliest row-#9 download-decision deadline, if any: while a
+    /// download is parked the wait ends at the sooner of the timer and parked deadlines, so the
+    /// bound fires even with no other traffic (shared mechanism with row #10, Ref BRO-53).
     pub(crate) fn recv(
         &self,
         task_queue: &TaskQueue<MainThreadScriptMsg>,
         timer_scheduler: &TimerScheduler,
         fully_active: &FxHashSet<PipelineId>,
+        parked_deadline: Option<Instant>,
     ) -> MixedMessage {
         let mut select = Select::new();
 
@@ -505,7 +510,11 @@ impl ScriptThreadReceivers {
             }
         };
 
-        if let Some(deadline) = timer_scheduler.next_deadline() {
+        if let Some(deadline) = match (timer_scheduler.next_deadline(), parked_deadline) {
+            (Some(timer), Some(parked)) => Some(timer.min(parked)),
+            (Some(timer), None) => Some(timer),
+            (None, parked) => parked,
+        } {
             select
                 .select_deadline(deadline)
                 .map(message_from_operation)

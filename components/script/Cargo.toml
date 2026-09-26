@@ -24,6 +24,9 @@ gamepad = ["script_bindings/gamepad", "embedder_traits/gamepad"]
 jitspew = ['js/jitspew']
 js_backtrace = []
 js_jit = ["js/jit"]
+# Row #10 test seam (Ref BRO-53): script-side registration barrier for
+# integration tests. Never enabled in production builds.
+test-registration-gate = []
 profilemozjs = ['js/profilemozjs']
 testbinding = ["script_bindings/testbinding"]
 tracing = ["dep:tracing", "script_bindings/tracing"]

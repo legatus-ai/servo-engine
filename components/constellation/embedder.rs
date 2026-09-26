@@ -4,7 +4,7 @@
 
 use embedder_traits::{
     InputEventOutcome, JSValue, JavaScriptEvaluationError, JavaScriptEvaluationId,
-    MediaSessionEvent, NewWebViewDetails, TraversalId,
+    MediaSessionEvent, NewWebViewDetails, PendingLoadFailure, TraversalId,
 };
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{PipelineId, WebViewId};
@@ -48,6 +48,11 @@ pub enum ConstellationToEmbedderMsg {
     /// allow or deny it (row #9, Ref BRO-53). Answered via
     /// [`EmbedderToConstellationMessage::DownloadResponse`].
     RequestDownload(WebViewId, DownloadReport),
+    /// A parked top-level load never committed: its browsing context did
+    /// not register before the bound (row #10, Ref BRO-53). The embedder
+    /// must treat this as visible — the navigation it asked for did not
+    /// happen and will not happen.
+    PendingLoadFailed(WebViewId, ServoUrl, PendingLoadFailure),
     /// The history state has changed.
     HistoryChanged(WebViewId, Vec<ServoUrl>, usize),
 }
