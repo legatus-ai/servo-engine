@@ -90,6 +90,28 @@ impl ClipboardDelegate for TestClipboard {
     }
 }
 
+/// Wait for a clipboard write, spinning Servo's event loop while polling:
+/// `SetClipboardText` travels script -> constellation -> embedder, so a bare
+/// channel wait starves delivery and always times out.
+fn recv_clipboard_text(
+    servo_test: &ServoTest,
+    receiver: &std::sync::mpsc::Receiver<String>,
+    timeout: Duration,
+    description: &str,
+) -> Option<String> {
+    let start = Instant::now();
+    loop {
+        if let Ok(text) = receiver.try_recv() {
+            return Some(text);
+        }
+        if start.elapsed() > timeout {
+            panic!("timed out waiting for {description}");
+        }
+        servo_test.servo().spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Spin the event loop until `condition` holds, panicking after `timeout`
 /// instead of hanging the harness forever.
 fn spin_until(
@@ -211,9 +233,12 @@ fn embedder_input_produces_transient_activation() {
         || eval_string(&servo_test, &webview, "String(window.__clickCopy)") != "null",
     );
     let click_outcome = eval_string(&servo_test, &webview, "String(window.__clickCopy)");
-    let clipboard_text = clip_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("click-phase copy to reach the embedder clipboard");
+    let clipboard_text = recv_clipboard_text(
+        &servo_test,
+        &clip_rx,
+        Duration::from_secs(10),
+        "click-phase copy to reach the embedder clipboard",
+    );
     assert_eq!(
         click_outcome, "true",
         "click handler copy must succeed under transient activation"
@@ -237,9 +262,12 @@ fn embedder_input_produces_transient_activation() {
         || eval_string(&servo_test, &webview, "String(window.__keyCopy)") != "null",
     );
     let key_outcome = eval_string(&servo_test, &webview, "String(window.__keyCopy)");
-    let clipboard_text = clip_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("keydown-phase copy to reach the embedder clipboard");
+    let clipboard_text = recv_clipboard_text(
+        &servo_test,
+        &clip_rx,
+        Duration::from_secs(10),
+        "keydown-phase copy to reach the embedder clipboard",
+    );
     assert_eq!(
         key_outcome, "true",
         "keydown handler copy must succeed under transient activation"
@@ -261,9 +289,22 @@ fn embedder_input_produces_transient_activation() {
         consume_state, "false/false",
         "consumed transient activation: script-driven copy must fail and stay inactive"
     );
+    // Drain any stragglers, then prove the consumed copy writes nothing
+    // (spinning: absence of delivery is only meaningful if the loop runs).
+    while clip_rx.try_recv().is_ok() {}
+    let start = Instant::now();
+    let mut stray = None;
+    while start.elapsed() < Duration::from_secs(2) {
+        if let Ok(text) = clip_rx.try_recv() {
+            stray = Some(text);
+            break;
+        }
+        servo_test.servo().spin_event_loop();
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert!(
-        clip_rx.recv_timeout(Duration::from_secs(2)).is_err(),
-        "consumed copy must not write to the embedder clipboard"
+        stray.is_none(),
+        "consumed copy must not write to the embedder clipboard, got {stray:?}"
     );
 
     let _ = server.close();
