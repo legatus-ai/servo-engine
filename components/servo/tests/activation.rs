@@ -233,15 +233,15 @@ fn embedder_input_produces_transient_activation() {
         || eval_string(&servo_test, &webview, "String(window.__clickCopy)") != "null",
     );
     let click_outcome = eval_string(&servo_test, &webview, "String(window.__clickCopy)");
+    assert_eq!(
+        click_outcome, "true",
+        "click handler copy must succeed under transient activation"
+    );
     let clipboard_text = recv_clipboard_text(
         &servo_test,
         &clip_rx,
         Duration::from_secs(10),
         "click-phase copy to reach the embedder clipboard",
-    );
-    assert_eq!(
-        click_outcome, "true",
-        "click handler copy must succeed under transient activation"
     );
     assert_eq!(
         clipboard_text, PAGE_TEXT,
@@ -262,15 +262,15 @@ fn embedder_input_produces_transient_activation() {
         || eval_string(&servo_test, &webview, "String(window.__keyCopy)") != "null",
     );
     let key_outcome = eval_string(&servo_test, &webview, "String(window.__keyCopy)");
+    assert_eq!(
+        key_outcome, "true",
+        "keydown handler copy must succeed under transient activation"
+    );
     let clipboard_text = recv_clipboard_text(
         &servo_test,
         &clip_rx,
         Duration::from_secs(10),
         "keydown-phase copy to reach the embedder clipboard",
-    );
-    assert_eq!(
-        key_outcome, "true",
-        "keydown handler copy must succeed under transient activation"
     );
     assert_eq!(
         clipboard_text, PAGE_TEXT,
