@@ -66,6 +66,10 @@ jobs:
     timeout-minutes: 180
     permissions:
       actions: write
+    env:
+      # legatus-ai/stylo is private: cargo fetches it with the git CLI over
+      # SSH, using the read-only deploy key loaded below.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
@@ -77,6 +81,13 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: legatus
+      - name: Load stylo deploy key
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.STYLO_DEPLOY_KEY }}
+      - name: Fetch private stylo fork over SSH
+        # Cargo.toml keeps the https URL for local builds; rewrite it here.
+        run: git config --global url."git@github.com:legatus-ai/stylo".insteadOf "https://github.com/legatus-ai/stylo"
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
         with:
@@ -192,12 +203,25 @@ jobs:
           sparse-checkout: scoreboard
           sparse-checkout-cone-mode: false
       - name: Download shard reports
+        # No shard reports exist when build/wpt failed early; the next step
+        # turns that into a clean skip instead of a generator traceback.
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: wptreport-*
           merge-multiple: true
           path: wpt-logs
+      - name: Check for shard reports
+        id: reports
+        run: |
+          if compgen -G "wpt-logs/*.json" > /dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No WPT shard reports; skipping scoreboard generation and publish."
+          fi
       - name: Fetch scoreboard history
+        if: ${{ steps.reports.outputs.found == 'true' }}
         run: |
           mkdir -p hist
           if git fetch origin scoreboard --depth 30; then
@@ -206,6 +230,7 @@ jobs:
             echo "no scoreboard branch yet; starting history"
           fi
       - name: Generate data + page
+        if: ${{ steps.reports.outputs.found == 'true' }}
         run: |
           DATE=$(date -u +%F)
           # HEAD is the legatus checkout: record the fork commit we tested.
@@ -220,6 +245,7 @@ jobs:
             --out-html site/index.html
           echo "DATE=$DATE" >> "$GITHUB_ENV"
       - name: Publish to scoreboard branch
+        if: ${{ steps.reports.outputs.found == 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
