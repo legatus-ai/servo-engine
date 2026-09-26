@@ -98,11 +98,11 @@ fn recv_clipboard_text(
     receiver: &std::sync::mpsc::Receiver<String>,
     timeout: Duration,
     description: &str,
-) -> Option<String> {
+) -> String {
     let start = Instant::now();
     loop {
         if let Ok(text) = receiver.try_recv() {
-            return Some(text);
+            return text;
         }
         if start.elapsed() > timeout {
             panic!("timed out waiting for {description}");
