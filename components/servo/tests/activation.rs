@@ -190,7 +190,7 @@ fn embedder_input_produces_transient_activation() {
     // PHASE 1: trusted native mouse click on the button.
     // Button spans x=10..130, y=10..50; click its center (70, 30).
     let _ = eval_string(&servo_test, &webview, "window.__clickCopy = null; 'reset'");
-    click_at_point(&webview, DevicePoint::new(70.0, 30.0), MouseButton::Left);
+    click_at_point(&webview, DevicePoint::new(70.0, 30.0), MouseButton::Primary);
     spin_until(
         &servo_test,
         Duration::from_secs(15),
