@@ -16,12 +16,25 @@ on:
 permissions:
   contents: read
 
+# legatus-ai/stylo is private. CI reads it over SSH with a read-only deploy
+# key scoped to that repo (servo-engine secret STYLO_DEPLOY_KEY); Cargo.toml
+# keeps the https URL for local builds and git rewrites it to SSH here.
+# PRs from outside forks do not receive the secret, so this check fails
+# for them by design (never switch to pull_request_target).
 jobs:
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Load stylo deploy key
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.STYLO_DEPLOY_KEY }}
+      - name: Fetch private stylo fork over SSH
+        run: git config --global url."git@github.com:legatus-ai/stylo".insteadOf "https://github.com/legatus-ai/stylo"
       - name: Resolve dependencies (locked)
         run: cargo metadata --locked --format-version 1 > /dev/null
