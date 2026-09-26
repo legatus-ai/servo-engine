@@ -32,11 +32,31 @@ use url::Url;
 
 use crate::common::{ServoTest, evaluate_javascript};
 
+/// How the delegate answers a download request.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Answer {
+    /// Drop it unanswered: the default, which denies at once.
+    #[default]
+    Drop,
+    /// Keep it and never answer: denied when the 10 s deadline expires.
+    Hold,
+    /// Allow it (still treated as deny until file writing lands).
+    Allow,
+}
+
 /// Records history commits and download requests.
 #[derive(Default)]
 struct RecordingDelegate {
     history: RefCell<Vec<Url>>,
     downloads: RefCell<Vec<(Url, Option<String>)>>,
+    answer: Answer,
+    held: RefCell<Vec<DownloadRequest>>,
+}
+
+impl RecordingDelegate {
+    fn answering(answer: Answer) -> Self {
+        Self { answer, ..Self::default() }
+    }
 }
 
 impl WebViewDelegate for RecordingDelegate {
@@ -48,13 +68,23 @@ impl WebViewDelegate for RecordingDelegate {
 
     fn notify_url_changed(&self, _webview: WebView, _url: Url) {}
 
+    // Paint each frame, as an embedder does: a screenshot waits for one.
+    fn notify_new_frame_ready(&self, webview: WebView) {
+        webview.paint();
+    }
+
     fn request_download(&self, _webview: WebView, request: DownloadRequest) {
         self.downloads.borrow_mut().push((
             request.url.clone(),
             request.suggested_filename.clone(),
         ));
-        // Drop without answering: the default, which denies and keeps
-        // the current page.
+        match self.answer {
+            // Drop without answering: the default, which denies and keeps
+            // the current page.
+            Answer::Drop => {},
+            Answer::Hold => self.held.borrow_mut().push(request),
+            Answer::Allow => request.allow(std::env::temp_dir().join("servo-download-test.bin")),
+        }
     }
 }
 
@@ -67,6 +97,23 @@ fn spin_until(servo_test: &ServoTest, what: &str, timeout: Duration, cond: impl 
         servo_test.servo.spin_event_loop();
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// A screenshot of the webview completes within a bound well past the
+/// download decision's own 10 s deadline, and succeeds.
+fn assert_screenshot_completes(servo_test: &ServoTest, webview: &WebView) {
+    let result = Rc::new(RefCell::new(None));
+    let slot = result.clone();
+    webview.take_screenshot(None, move |shot| {
+        *slot.borrow_mut() = Some(shot.is_ok());
+    });
+    spin_until(
+        servo_test,
+        "a screenshot",
+        Duration::from_secs(20),
+        || result.borrow().is_some(),
+    );
+    assert_eq!(*result.borrow(), Some(true), "the screenshot failed");
 }
 
 fn history_len(delegate: &RecordingDelegate) -> usize {
@@ -83,6 +130,7 @@ const PAGE: &str = r#"<!DOCTYPE html>
 <a id="plain" href="/file">plain link</a>
 <a id="dl-text" href="/notes" download>notes</a>
 <a id="article" href="/article">article</a>
+<a id="empty" href="/nocontent">no content</a>
 </body></html>"#;
 
 /// Serve the page, an attachment octet-stream at /file, a plain
@@ -110,6 +158,9 @@ fn serve_test_site() -> (net::test_util::Server, url::Url) {
                         HeaderValue::from_static("text/plain"),
                     );
                     *response.body_mut() = make_body(b"just notes".to_vec());
+                },
+                "/nocontent" => {
+                    *response.status_mut() = hyper::StatusCode::NO_CONTENT;
                 },
                 "/article" => {
                     response.headers_mut().insert(
@@ -165,6 +216,14 @@ fn hyperlink_downloads_park_and_report() {
     let servo_test = ServoTest::new();
     let (server, page) = serve_test_site();
 
+    // Scenario 0: the control. A screenshot completes with no download at
+    // all, so a timeout below is the download's and not the harness's.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        assert_screenshot_completes(&servo_test, &webview);
+    }
+
     // Scenario 1: attribute alone triggers — `<a download>` to a
     // same-origin non-attachment response is a download, not a navigation.
     {
@@ -204,6 +263,11 @@ fn hyperlink_downloads_park_and_report() {
         // The page is kept: exactly the initial commit, still on the page.
         assert_eq!(history_len(&delegate), 1);
         assert_eq!(webview.url().as_ref(), Some(&page));
+        // And it still paints. The denied download's new pipeline must
+        // not stay a pending change: screenshot readiness waits on every
+        // pending change, so a leftover one wedged every later screenshot
+        // (the pane's r34 conformance run).
+        assert_screenshot_completes(&servo_test, &webview);
     }
 
     // Scenario 3: header alone triggers — a plain link (no `download`
@@ -244,9 +308,71 @@ fn hyperlink_downloads_park_and_report() {
         assert_eq!(download_count(&delegate), 0);
         assert_eq!(history_len(&delegate), 2);
         assert_eq!(webview.url().as_ref(), Some(&article));
+        // A navigation that commits is not aborted: it still paints.
+        assert_screenshot_completes(&servo_test, &webview);
+    }
+
+    // Scenario 5: the other deny path. The embedder holds the request and
+    // never answers, so the download is denied when its 10 s deadline
+    // expires. That path must drop the new pipeline's pending change too:
+    // the screenshot can only complete once it has.
+    {
+        let delegate = Rc::new(RecordingDelegate::answering(Answer::Hold));
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "dl");
+        spin_until(
+            &servo_test,
+            "download request",
+            Duration::from_secs(30),
+            || download_count(&delegate) > 0,
+        );
+        assert_eq!(delegate.held.borrow().len(), 1, "the request is held, unanswered");
+        assert_screenshot_completes(&servo_test, &webview);
+        assert_eq!(history_len(&delegate), 1);
+        assert_eq!(webview.url().as_ref(), Some(&page));
+    }
+
+    // Scenario 6: the rule for allow as well as deny.
+    allowed_download_keeps_page_painting(&servo_test, &page);
+
+    // Scenario 7: the existing 204 abort, untouched by the download fix. A
+    // link to a 204 response keeps the page, asks no download, and paints.
+    {
+        let delegate = Rc::new(RecordingDelegate::default());
+        let webview = build_page(&servo_test, delegate.clone(), &page);
+        click(&servo_test, &webview, "empty");
+        // Let the navigation fetch and abort before the screenshot is asked.
+        let clicked = Instant::now();
+        spin_until(&servo_test, "the 204 navigation", Duration::from_secs(5), || {
+            clicked.elapsed() > Duration::from_secs(2)
+        });
+        assert_screenshot_completes(&servo_test, &webview);
+        assert_eq!(download_count(&delegate), 0);
+        assert_eq!(history_len(&delegate), 1);
+        assert_eq!(webview.url().as_ref(), Some(&page));
     }
 
     let _ = server.close();
+}
+
+/// A download never commits a document, so its navigation pipeline is
+/// abandoned whatever the embedder decides: an allowed download keeps the
+/// page, and the page still paints. (Allow is treated as deny until file
+/// writing lands; the rule holds after it does.) Run inside
+/// `hyperlink_downloads_park_and_report`, whose `Servo` it shares.
+fn allowed_download_keeps_page_painting(servo_test: &ServoTest, page: &Url) {
+    let delegate = Rc::new(RecordingDelegate::answering(Answer::Allow));
+    let webview = build_page(servo_test, delegate.clone(), page);
+    click(servo_test, &webview, "dl");
+    spin_until(
+        servo_test,
+        "download request",
+        Duration::from_secs(30),
+        || download_count(&delegate) > 0,
+    );
+    assert_screenshot_completes(servo_test, &webview);
+    assert_eq!(history_len(&delegate), 1);
+    assert_eq!(webview.url().as_ref(), Some(page));
 }
 
 /// Out-of-crate compile pin for the `DownloadRequest` re-export: the
