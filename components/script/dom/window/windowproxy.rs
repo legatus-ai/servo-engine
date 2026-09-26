@@ -61,6 +61,7 @@ use serde::{Deserialize, Serialize};
 use servo_base::generic_channel;
 use servo_base::generic_channel::GenericSend;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
+use servo_config::pref;
 use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, LoadData, LoadOrigin, NavigationHistoryBehavior,
     ScriptToConstellationMessage, TargetSnapshotParams,
@@ -572,7 +573,12 @@ impl WindowProxy {
         // Let targetNavigable and windowType be the result of applying the rules for
         // choosing a navigable given target, sourceDocument's node navigable, and noopener.
         // If targetNavigable is null, then return null.
-        let (chosen, new) = match self.choose_a_navigable(cx, non_empty_target, noopener) {
+        let (chosen, new) = match self.choose_a_navigable(
+            cx,
+            non_empty_target,
+            noopener,
+            /* bypass_popup_blocker */ false,
+        ) {
             (Some(chosen), new) => (chosen, new),
             (None, _) => return Ok(None),
         };
@@ -653,11 +659,18 @@ impl WindowProxy {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
+    ///
+    /// `bypass_popup_blocker` is true only for embedder-initiated navigations
+    /// (e.g. the "open link in new webview" context-menu action), where the
+    /// user has explicitly approved the new top-level traversable through
+    /// embedder UI. All page-driven paths (window.open, hyperlink and form
+    /// navigations) go through the popup blocker.
     pub(crate) fn choose_a_navigable(
         &self,
         cx: &mut JSContext,
         name: DOMString,
         noopener: bool,
+        bypass_popup_blocker: bool,
     ) -> (Option<DomRoot<WindowProxy>>, bool) {
         // Step 1. Let chosen be null.
         // Step 2. Let windowType be "existing or none".
@@ -713,7 +726,24 @@ impl WindowProxy {
         //   activation and the user agent has been configured to not show popups
         //   (i.e., the user agent has a "popup blocker" enabled)
         //    - The user agent may inform the user that a popup has been blocked.
-        // TODO: Implement this.
+        if !bypass_popup_blocker && pref!(dom_popup_blocker_enabled) {
+            let source_window = self.document().map(|document| {
+                DomRoot::from_ref(document.window() as &Window)
+            });
+            let has_transient_activation = source_window
+                .as_ref()
+                .map(|window| window.has_transient_activation())
+                .unwrap_or(false);
+            if !has_transient_activation {
+                return (None, false);
+            }
+            // An allowed popup consumes transient activation, so a second
+            // popup attempt from the same gesture is blocked.
+            // <https://html.spec.whatwg.org/multipage/#consume-user-activation>
+            if let Some(window) = source_window.as_ref() {
+                window.consume_user_activation();
+            }
+        }
         //
         // ↪ If sandboxingFlagSet has the sandboxed auxiliary navigation browsing context flag set
         //   - The user agent may report to a developer console that a popup has been blocked.

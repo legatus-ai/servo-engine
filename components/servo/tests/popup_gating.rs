@@ -4,10 +4,12 @@
 
 //! Row 12: `window.open` / `target=_blank` popup gating on transient activation.
 //!
-//! RED-first: asserts the desired end state. Currently RED — Servo's
-//! `choose_a_navigable` step 8 is an unimplemented TODO
-//! (`components/script/dom/window/windowproxy.rs`), so popups open
-//! regardless of activation and nothing is ever consumed.
+//! RED-first: this test asserted the desired end state while Servo's
+//! `choose_a_navigable` step 8 was an unimplemented TODO
+//! (`components/script/dom/window/windowproxy.rs`), so popups opened
+//! regardless of activation and nothing was ever consumed (RED commit).
+//! The gate is now implemented (transient activation required, consumed on
+//! allow; embedder-initiated navigations bypass), and this test is GREEN.
 //!
 //! Desired end state (spec choosing-a-navigable step 8, first option):
 //! - (a) script `window.open` with no gesture returns null and the embedder
@@ -38,19 +40,27 @@ use servo::{
 };
 
 static PAGE_HTML: &str = r#"<!doctype html><html><body style="margin:0">
-<button id="openBtn" style="position:absolute;left:10px;top:10px;width:120px;height:40px">open</button>
-<a id="blankLink" href="about:blank#popup" target="_blank" style="position:absolute;left:10px;top:60px;width:120px;height:40px;display:block">popup</a>
-<button id="noopBtn" style="position:absolute;left:10px;top:110px;width:120px;height:40px">noop</button>
+<button id="openBtn" style="position:absolute;left:10px;top:8px;width:120px;height:24px">open</button>
+<a id="blankLink" href="about:blank#popup" target="_blank" style="position:absolute;left:10px;top:36px;width:120px;height:24px;display:block">popup</a>
+<button id="noopBtn" style="position:absolute;left:10px;top:64px;width:120px;height:24px">noop</button>
 <script>
 window.__openDone = false;
 window.__firstNull = 'unset';
 window.__secondNull = 'unset';
+window.__anchorClicked = false;
 document.getElementById('openBtn').addEventListener('click', () => {
   const first = window.open('about:blank');
   const second = window.open('about:blank');
   window.__firstNull = (first === null) ? 'null' : 'object';
   window.__secondNull = (second === null) ? 'null' : 'object';
   window.__openDone = true;
+});
+document.getElementById('blankLink').addEventListener('click', () => {
+  window.__anchorClicked = true;
+});
+window.__noopClicked = false;
+document.getElementById('noopBtn').addEventListener('click', () => {
+  window.__noopClicked = true;
 });
 </script>
 </body></html>"#;
@@ -69,11 +79,20 @@ impl WebViewDelegate for PopupCountingDelegate {
     }
 
     fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
+        // The popup WebView must actually be materialized: script's
+        // `create_auxiliary_browsing_context` round-trips to the constellation
+        // for the new webview id, and `window.open` returns null when the
+        // embedder produces nothing. The popup stays hidden (this harness has
+        // no window for it): visible popups are embedded in the shared
+        // WebRender root display list on top of the opener and would steal
+        // its hit-testing, so later native clicks would route to the popup
+        // instead of the page under test.
         self.popup_requests.set(self.popup_requests.get() + 1);
         let popup = request
             .builder(self.rendering_context.clone())
             .delegate(parent_webview.delegate())
             .build();
+        popup.hide();
         self.popups.borrow_mut().push(popup);
     }
 }
@@ -174,22 +193,63 @@ fn popup_blocker_gates_new_traversables_on_transient_activation() {
         || delegate.new_frame_ready.get(),
     );
 
-    // Sanity: controls must be where the clicks will land (CSS px).
+    // Sanity: controls must be where the clicks will land (CSS px), and
+    // the viewport must cover all of them (they all sit within y<100).
     let rects = eval_string(
         &servo_test,
         &webview,
         "JSON.stringify([ \
            document.getElementById('openBtn').getBoundingClientRect(), \
-           document.getElementById('blankLink').getBoundingClientRect() \
+           document.getElementById('blankLink').getBoundingClientRect(), \
+           document.getElementById('noopBtn').getBoundingClientRect(), \
+           window.innerHeight \
          ])",
     );
     assert!(
-        rects.contains("\"x\":10") && rects.contains("\"y\":10"),
-        "open button must sit at (10,10), got {rects}"
+        rects.contains("\"x\":10") && rects.contains("\"y\":8"),
+        "open button must sit at (10,8), got {rects}"
     );
     assert!(
-        rects.contains("\"y\":60"),
-        "anchor must sit at y=60, got {rects}"
+        rects.contains("\"y\":36"),
+        "anchor must sit at y=36, got {rects}"
+    );
+    assert!(
+        rects.contains("\"y\":64"),
+        "noop button must sit at y=64, got {rects}"
+    );
+    assert!(
+        rects.matches("\"height\":24").count() >= 3,
+        "all three controls must be 24px tall, got {rects}"
+    );
+
+    // PHASE 0 (activation sanity): a lone native click on the noop button
+    // must dispatch and stamp transient activation. Afterwards wait for
+    // expiry so phase (a) starts with no ambient activation (duration is
+    // 5s; allow margin).
+    click_at_point(
+        &webview,
+        DevicePoint::new(70.0, 76.0),
+        MouseButton::Primary,
+    );
+    spin_until(
+        &servo_test,
+        Duration::from_secs(15),
+        "sanity noop click handler to run",
+        || eval_string(&servo_test, &webview, "String(window.__noopClicked)") == "true",
+    );
+    assert_eq!(
+        eval_string(&servo_test, &webview, "String(navigator.userActivation.isActive)"),
+        "true",
+        "sanity noop click must stamp transient activation"
+    );
+    spin_until(
+        &servo_test,
+        Duration::from_secs(15),
+        "sanity activation to expire",
+        || {
+            eval_string(&servo_test, &webview, "String(navigator.userActivation.isActive)")
+                == "false"
+        },
     );
 
     // PHASE (a): script window.open with no gesture — null, no embedder request.
@@ -213,7 +273,7 @@ fn popup_blocker_gates_new_traversables_on_transient_activation() {
     // until the test thread's spin delivers the embedder response.
     click_at_point(
         &webview,
-        DevicePoint::new(70.0, 30.0),
+        DevicePoint::new(70.0, 20.0),
         MouseButton::Primary,
     );
     spin_until(
@@ -245,11 +305,33 @@ fn popup_blocker_gates_new_traversables_on_transient_activation() {
         "the allowed popup must have consumed transient activation"
     );
 
+    // With one popup alive, a native click must still reach the page.
+    // (Hidden popups stay out of the shared WebRender hit-test list, so
+    // the opener keeps receiving input no matter how many popups exist.)
+    let _ = eval_string(&servo_test, &webview, "window.__noopClicked = false; 'reset'");
+    click_at_point(
+        &webview,
+        DevicePoint::new(70.0, 76.0),
+        MouseButton::Primary,
+    );
+    spin_until(
+        &servo_test,
+        Duration::from_secs(15),
+        "noop click handler to run with one popup alive",
+        || eval_string(&servo_test, &webview, "String(window.__noopClicked)") == "true",
+    );
+
     // PHASE (c): native click on <a target=_blank> — allowed (fresh gesture).
     click_at_point(
         &webview,
-        DevicePoint::new(70.0, 80.0),
+        DevicePoint::new(70.0, 48.0),
         MouseButton::Primary,
+    );
+    spin_until(
+        &servo_test,
+        Duration::from_secs(30),
+        "anchor click handler to run",
+        || eval_string(&servo_test, &webview, "String(window.__anchorClicked)") == "true",
     );
     spin_until(
         &servo_test,
@@ -283,11 +365,19 @@ fn popup_blocker_gates_new_traversables_on_transient_activation() {
     );
 
     // PHASE (d-control): scripted .click() WITH ambient transient activation
-    // (fresh native click on a harmless button first) — allowed.
+    // (fresh native click on a harmless button first) — allowed. This doubles
+    // as the two-popups-alive input check.
+    let _ = eval_string(&servo_test, &webview, "window.__noopClicked = false; 'reset'");
     click_at_point(
         &webview,
-        DevicePoint::new(70.0, 130.0),
+        DevicePoint::new(70.0, 76.0),
         MouseButton::Primary,
+    );
+    spin_until(
+        &servo_test,
+        Duration::from_secs(15),
+        "noop click handler to run",
+        || eval_string(&servo_test, &webview, "String(window.__noopClicked)") == "true",
     );
     spin_until(
         &servo_test,
