@@ -1,0 +1,209 @@
+# Web-compat scoreboard: nightly WPT (fork release, headless, sharded) vs
+# upstream Servo vs Chrome, published to the `scoreboard` branch (Pages).
+# Registered from main (schedule + dispatch only register on the default
+# branch) but builds and tests the `legatus` branch: main needs nothing
+# else from us. Nightly + manual only: never runs on pull_request.
+name: Web-compat scoreboard
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      wpt-subsets:
+        description: "WPT path filters (empty = full suite)"
+        default: ""
+        required: false
+        type: string
+      chunks:
+        description: "Number of WPT shards"
+        default: "4"
+        required: false
+        type: string
+
+concurrency:
+  group: scoreboard
+  cancel-in-progress: false
+
+env:
+  RUST_BACKTRACE: 1
+  SHELL: /bin/bash
+  GST_PLUGIN_FEATURE_RANK: pulsesink:NONE,alsasink:NONE,jacksink:NONE,fakesink:MAX
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      chunks: ${{ steps.ids.outputs.chunks }}
+      count: ${{ steps.ids.outputs.count }}
+    steps:
+      - id: ids
+        run: |
+          N="${{ inputs.chunks || '4' }}"
+          echo "chunks=$(seq 1 "$N" | jq -R . | jq -s -c 'map(tonumber)')" >> "$GITHUB_OUTPUT"
+          echo "count=$N" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
+        with:
+          tool-cache: false
+          large-packages: false
+          swap-storage: false
+      - name: Checkout legatus
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: legatus
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+        with:
+          version: "20.1"
+          directory: ${{ runner.temp }}/llvm
+      - name: Set LIBCLANG_PATH
+        run: echo "LIBCLANG_PATH=${LLVM_PATH}/lib" >> $GITHUB_ENV
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+      - name: Bootstrap dependencies
+        timeout-minutes: 30
+        run: |
+          sudo apt update
+          ./mach bootstrap --yes --skip-lints --skip-nextest
+          # FIXME #41043, #41044
+          sudo apt install -qy --no-install-recommends mesa-vulkan-drivers fonts-noto-cjk fonts-dejavu-extra
+          # FIXME #35029
+          sudo apt purge -y fonts-droid-fallback
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Enable sccache
+        run: |
+          {
+            echo "SCCACHE_GHA_VERSION=${{ vars.SCCACHE_GHA_VERSION || '1' }}"
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+            echo "CARGO_INCREMENTAL=0"
+          } >> $GITHUB_ENV
+      - name: Build release
+        run: ./mach build --release
+      - name: Package binary
+        run: ./mach package --profile release
+      - name: Upload binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scoreboard-binary
+          path: target/release/servo-tech-demo.tar.gz
+          if-no-files-found: error
+
+  wpt:
+    needs: [setup, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk_id: ${{ fromJSON(needs.setup.outputs.chunks) }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
+        with:
+          tool-cache: false
+          large-packages: false
+          swap-storage: false
+      - name: Checkout legatus
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: legatus
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+      - name: Bootstrap dependencies
+        timeout-minutes: 30
+        run: |
+          sudo apt update
+          ./mach bootstrap --yes --skip-lints --skip-nextest
+          # FIXME #41043, #41044
+          sudo apt install -qy --no-install-recommends mesa-vulkan-drivers fonts-noto-cjk fonts-dejavu-extra
+          # FIXME #35029
+          sudo apt purge -y fonts-droid-fallback
+      - name: Download binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: scoreboard-binary
+      - name: Unpack binary
+        run: tar -xzf servo-tech-demo.tar.gz
+      - name: Run WPT shard
+        run: |
+          nproc=$(nproc)
+          ./mach test-wpt \
+            --bin servo/servoshell \
+            --release --headless \
+            --processes "$nproc" --timeout-multiplier 2 \
+            --total-chunks ${{ needs.setup.outputs.count }} --this-chunk ${{ matrix.chunk_id }} \
+            --log-wptreport wptreport-${{ matrix.chunk_id }}.json \
+            ${{ inputs.wpt-subsets || '' }}
+      - name: Upload shard report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: wptreport-${{ matrix.chunk_id }}
+          path: wptreport-${{ matrix.chunk_id }}.json
+          if-no-files-found: error
+
+  scoreboard:
+    needs: [wpt]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout legatus (generator)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: legatus
+          sparse-checkout: scoreboard
+          sparse-checkout-cone-mode: false
+      - name: Download shard reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: wptreport-*
+          merge-multiple: true
+          path: wpt-logs
+      - name: Fetch scoreboard history
+        run: |
+          mkdir -p hist
+          if git fetch origin scoreboard --depth 30; then
+            git archive FETCH_HEAD data | tar -x -C hist || true
+          else
+            echo "no scoreboard branch yet; starting history"
+          fi
+      - name: Generate data + page
+        run: |
+          DATE=$(date -u +%F)
+          # HEAD is the legatus checkout: record the fork commit we tested.
+          FORK_SHA=$(git rev-parse HEAD)
+          mkdir -p site/data
+          python3 scoreboard/generate.py \
+            --date "$DATE" \
+            --fork-sha "$FORK_SHA" \
+            --reports wpt-logs/*.json \
+            --history-dir hist \
+            --out-data "site/data/$DATE.json" \
+            --out-html site/index.html
+          echo "DATE=$DATE" >> "$GITHUB_ENV"
+      - name: Publish to scoreboard branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git fetch origin scoreboard; then
+            git checkout -B scoreboard FETCH_HEAD
+          else
+            git checkout --orphan scoreboard
+            git rm -rf . || true
+          fi
+          mkdir -p data
+          cp "site/data/$DATE.json" data/
+          cp site/index.html index.html
+          git add "data/$DATE.json" index.html
+          git commit -m "scoreboard: $DATE" || echo "nothing to commit"
+          git push origin scoreboard
