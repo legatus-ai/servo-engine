@@ -450,18 +450,18 @@ codegen-units = 1
 #
 #     <crate> = { path = "/path/to/local/checkout" }
 #
-# Legatus: sibling rust-url checkout, branch legatus at
+# Legatus: rust-url fork legatus-ai/rust-url, branch legatus at
 # 98a5fbb (upstream #1127 plus percent-encode trailing space in opaque
 # path, servo/rust-url#1123) plus the legatus_opaque_path_trailing_space_encoded
 # fork marker consumed as a build-time check by tools/legatus-check
 # (fails against upstream url). Without this patch the engine workspace
 # resolves crates.io url while downstream workspaces resolve the fork —
-# same source, two different URL parsers (invariant 13). A path is used
-# because the fork lives on no remote yet; prefer a git dependency on
-# repo+rev when it does. Requires the ../rust-url sibling checkout at
-# that branch; keep it in sync. The pane/renderer manifests must carry
-# the same patch.
-url = { path = "../rust-url/url" }
+# same source, two different URL parsers (invariant 13). Pinned as a git
+# dependency on repo+rev (not a sibling path) so CI runners can resolve
+# it; bump the rev when the fork's legatus branch moves. The
+# pane/renderer manifests must carry the same patch. For local
+# iteration you can temporarily use { path = "../rust-url/url" }.
+url = { git = "https://github.com/legatus-ai/rust-url", rev = "98a5fbb967cab1265651f9878e94b316cd89c6a9" }
 #
 # For html5ever:
 #
@@ -486,25 +486,26 @@ url = { path = "../rust-url/url" }
 # content-security-policy = { path = "../rust-content-security-policy" }
 #
 # Or for Stylo:
-# Legatus #7: sibling stylo checkout, branch legatus at
+# Legatus #7: stylo fork legatus-ai/stylo, branch legatus at
 # 33a783cbd2301b71494921272dc472f9678c2911, with text-overflow ungated
 # (longhands.toml hunk removing it from layout.unimplemented) plus the
 # legatus_text_overflow_ungated fork marker consumed as a build-time
 # check by tools/legatus-check (fails against upstream Stylo).
-# A path is used because the fork lives on no remote yet; prefer a git
-# dependency on repo+rev when it does. Requires the ../stylo sibling
-# checkout at that branch; keep it in sync and re-apply the hunk there
-# after every upstream stylo rebase. The pane renderer manifest must
-# carry the same patch to get the ellipsis.
+# Pinned as a git dependency on repo+rev (not a sibling path) so CI
+# runners can resolve it; bump the rev when the fork's legatus branch
+# moves, and re-apply the hunk there after every upstream stylo rebase.
+# The pane renderer manifest must carry the same patch to get the
+# ellipsis. For local iteration you can temporarily point these at a
+# ../stylo sibling checkout by path.
 [patch."https://github.com/servo/stylo"]
-selectors = { path = "../stylo/selectors" }
-servo_arc = { path = "../stylo/servo_arc" }
-stylo = { path = "../stylo/style" }
-stylo_atoms = { path = "../stylo/stylo_atoms" }
-stylo_dom = { path = "../stylo/stylo_dom" }
-stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-stylo_traits = { path = "../stylo/style_traits" }
+selectors = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+servo_arc = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo_atoms = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo_dom = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo_malloc_size_of = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo_static_prefs = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
+stylo_traits = { git = "https://github.com/legatus-ai/stylo", rev = "33a783cbd2301b71494921272dc472f9678c2911" }
 # Or for another Git dependency:
 #
 # [patch."https://github.com/servo/<repository>"]
