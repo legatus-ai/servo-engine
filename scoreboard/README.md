@@ -12,8 +12,9 @@ serve that branch with Pages.
   how wpt.fyi counts: its per-run summary files carry `c: [pass, total]`
   subtest counts per test, and the generator aggregates those identically.
   Tests without subtests are ignored on every side.
-- Fork numbers come from the workflow's own `./mach test-wpt --headless`
-  `--log-wptreport` shards (4 chunks, `--chunk-type hash`), merged.
+- Fork numbers come from the workflow's own `./mach test-wpt --release
+  --headless` `--log-wptreport` shards (4 chunks by default, adjustable
+  per manual run), merged.
 - Upstream and Chrome numbers come from the wpt.fyi API only
   (`/api/runs` for the latest `master` run of `product=servo` /
   `product=chrome`, then that run's summary file). The fork SHA never
@@ -31,10 +32,10 @@ handling — no dedicated downloads suite exists), `html/user-activation/`.
 
 ## Files on `legatus`
 
-- `.github/workflows/scoreboard.yml` — nightly 06:00 UTC + manual
-  (`workflow_dispatch` with optional WPT subset filter and chunk count).
-  Never runs on `pull_request`. Reuses `linux.yml` (release build with
-  sccache on forks) and `linux-wpt.yml` (shard matrix, merged
-  `wpt-full-logs-linux` artifact), then generates and pushes.
+- `.github/workflows/scoreboard.yml` (registered from `main`, builds the
+  `legatus` branch) — nightly 06:00 UTC + manual (`workflow_dispatch`
+  with optional WPT subset filter and chunk count). Never runs on
+  `pull_request`. Self-contained: release build with sccache, shard
+  matrix, merged `wptreport-*.json` artifacts, then generates and pushes.
 - `scoreboard/generate.py` — stdlib-only scorer + static page renderer.
 - This README.
