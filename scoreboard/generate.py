@@ -274,12 +274,16 @@ def scope_tests(tests, subsets):
     paths = [p.strip("/") for p in (subsets or "").split() if p.strip("/")]
     if not paths:
         return tests
-    exact = {"/" + p for p in paths}
-    dirs = tuple("/" + p + "/" for p in paths)
+    # A .js source (x.any.js, x.window.js) runs as generated .html ids
+    # (x.any.html, x.any.worker.html, x.window.html), never as itself.
+    stems = tuple("/" + p[:-3] + "." for p in paths if p.endswith(".js"))
+    exact = {"/" + p for p in paths if not p.endswith(".js")}
+    dirs = tuple("/" + p + "/" for p in paths if not p.endswith(".js"))
 
     def keep(name):
         base = name.split("?", 1)[0]
-        return base in exact or name.startswith(dirs)
+        return (base in exact or name.startswith(dirs)
+                or (bool(stems) and base.endswith(".html") and base.startswith(stems)))
 
     return {name: r for name, r in tests.items() if keep(name)}
 
