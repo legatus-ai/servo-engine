@@ -4325,6 +4325,9 @@ impl ScriptThread {
             }
         };
         if !removed {
+            // Unexpected for a hyperlink download: said, so a future wedge
+            // after a download shows up in the log instead of in silence.
+            debug!("{pipeline_id}: download pipeline had no incomplete load; nothing to abort");
             return;
         }
         let _ = self.senders.pipeline_to_constellation_sender.send((
