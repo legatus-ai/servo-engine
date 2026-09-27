@@ -55,7 +55,10 @@ struct RecordingDelegate {
 
 impl RecordingDelegate {
     fn answering(answer: Answer) -> Self {
-        Self { answer, ..Self::default() }
+        Self {
+            answer,
+            ..Self::default()
+        }
     }
 }
 
@@ -74,10 +77,9 @@ impl WebViewDelegate for RecordingDelegate {
     }
 
     fn request_download(&self, _webview: WebView, request: DownloadRequest) {
-        self.downloads.borrow_mut().push((
-            request.url.clone(),
-            request.suggested_filename.clone(),
-        ));
+        self.downloads
+            .borrow_mut()
+            .push((request.url.clone(), request.suggested_filename.clone()));
         match self.answer {
             // Drop without answering: the default, which denies and keeps
             // the current page.
@@ -107,12 +109,9 @@ fn assert_screenshot_completes(servo_test: &ServoTest, webview: &WebView) {
     webview.take_screenshot(None, move |shot| {
         *slot.borrow_mut() = Some(shot.is_ok());
     });
-    spin_until(
-        servo_test,
-        "a screenshot",
-        Duration::from_secs(20),
-        || result.borrow().is_some(),
-    );
+    spin_until(servo_test, "a screenshot", Duration::from_secs(20), || {
+        result.borrow().is_some()
+    });
     assert_eq!(*result.borrow(), Some(true), "the screenshot failed");
 }
 
@@ -153,20 +152,18 @@ fn serve_test_site() -> (net::test_util::Server, url::Url) {
                     *response.body_mut() = make_body(b"binary-bytes".to_vec());
                 },
                 "/notes" => {
-                    response.headers_mut().insert(
-                        "content-type",
-                        HeaderValue::from_static("text/plain"),
-                    );
+                    response
+                        .headers_mut()
+                        .insert("content-type", HeaderValue::from_static("text/plain"));
                     *response.body_mut() = make_body(b"just notes".to_vec());
                 },
                 "/nocontent" => {
                     *response.status_mut() = hyper::StatusCode::NO_CONTENT;
                 },
                 "/article" => {
-                    response.headers_mut().insert(
-                        "content-type",
-                        HeaderValue::from_static("text/html"),
-                    );
+                    response
+                        .headers_mut()
+                        .insert("content-type", HeaderValue::from_static("text/html"));
                     *response.body_mut() = make_body(b"<title>article</title>plain page".to_vec());
                 },
                 _ => {
@@ -326,7 +323,11 @@ fn hyperlink_downloads_park_and_report() {
             Duration::from_secs(30),
             || download_count(&delegate) > 0,
         );
-        assert_eq!(delegate.held.borrow().len(), 1, "the request is held, unanswered");
+        assert_eq!(
+            delegate.held.borrow().len(),
+            1,
+            "the request is held, unanswered"
+        );
         assert_screenshot_completes(&servo_test, &webview);
         assert_eq!(history_len(&delegate), 1);
         assert_eq!(webview.url().as_ref(), Some(&page));
@@ -343,9 +344,12 @@ fn hyperlink_downloads_park_and_report() {
         click(&servo_test, &webview, "empty");
         // Let the navigation fetch and abort before the screenshot is asked.
         let clicked = Instant::now();
-        spin_until(&servo_test, "the 204 navigation", Duration::from_secs(5), || {
-            clicked.elapsed() > Duration::from_secs(2)
-        });
+        spin_until(
+            &servo_test,
+            "the 204 navigation",
+            Duration::from_secs(5),
+            || clicked.elapsed() > Duration::from_secs(2),
+        );
         assert_screenshot_completes(&servo_test, &webview);
         assert_eq!(download_count(&delegate), 0);
         assert_eq!(history_len(&delegate), 1);

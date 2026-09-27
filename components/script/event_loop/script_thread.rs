@@ -85,8 +85,8 @@ use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{
-    BrowsingContextId, DownloadId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId,
-    WebViewId,
+    BrowsingContextId, DownloadId, HistoryStateId, PipelineId, PipelineNamespace,
+    ScriptEventLoopId, WebViewId,
 };
 use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 use servo_base::{Epoch, generic_channel};
@@ -1275,10 +1275,10 @@ impl ScriptThread {
             .iter()
             .any(|(_, document)| document.needs_rendering_update(no_gc));
         let running_animations = self.documents.borrow().iter().any(|(_, document)| {
-            document.is_fully_active() &&
-                !document.window().throttled() &&
-                (document.animation_manager().running_animation_count() != 0 ||
-                    document.has_active_request_animation_frame_callbacks())
+            document.is_fully_active()
+                && !document.window().throttled()
+                && (document.animation_manager().running_animation_count() != 0
+                    || document.has_active_request_animation_frame_callbacks())
         });
 
         // If we are not running animations and no rendering update is
@@ -1716,9 +1716,9 @@ impl ScriptThread {
         };
         let task_duration = start.elapsed();
         for (doc_id, doc) in self.documents.borrow().iter() {
-            if let Some(pipeline_id) = pipeline_id &&
-                pipeline_id == doc_id &&
-                task_duration.as_nanos() > MAX_TASK_NS
+            if let Some(pipeline_id) = pipeline_id
+                && pipeline_id == doc_id
+                && task_duration.as_nanos() > MAX_TASK_NS
             {
                 if opts::get()
                     .debug
@@ -1894,9 +1894,9 @@ impl ScriptThread {
                     document.handle_no_longer_waiting_on_asynchronous_image_updates();
                 }
             },
-            msg @ ScriptThreadMessage::SpawnPipeline(..) |
-            msg @ ScriptThreadMessage::ExitFullScreen(..) |
-            msg @ ScriptThreadMessage::ExitScriptThread => {
+            msg @ ScriptThreadMessage::SpawnPipeline(..)
+            | msg @ ScriptThreadMessage::ExitFullScreen(..)
+            | msg @ ScriptThreadMessage::ExitScriptThread => {
                 panic!("should have handled {:?} already", msg)
             },
             ScriptThreadMessage::SetScrollStates(pipeline_id, scroll_states) => {
@@ -3653,8 +3653,8 @@ impl ScriptThread {
         // hence we filter it out here.
         let iframe_in_this_script_thread = iframe.is_some();
         let parent_info = incomplete.parent_info.filter(|parent_id| {
-            iframe_in_this_script_thread ||
-                self.documents.borrow().find_document(*parent_id).is_none()
+            iframe_in_this_script_thread
+                || self.documents.borrow().find_document(*parent_id).is_none()
         });
 
         // Initialize the browsing context for the window.
@@ -4207,11 +4207,7 @@ impl ScriptThread {
                 // referrer policy it can be origin-only or None even when the
                 // frame has a full URL. The embedder must treat it as a hint
                 // identifying the originating frame, not as the frame's URL.
-                (
-                    load.webview_id,
-                    frame_url,
-                    load.load_data.anchor_download,
-                )
+                (load.webview_id, frame_url, load.load_data.anchor_download)
             },
         };
         let DownloadIntent::Download { filename } =
@@ -4287,14 +4283,11 @@ impl ScriptThread {
         for (download_id, webview_id, pipeline_id, request_id) in expired {
             self.parked_downloads.borrow_mut().remove(&download_id);
             cancel_async_fetch(vec![request_id], &self.resource_threads.core_thread);
-            let _ = self
-                .senders
-                .pipeline_to_constellation_sender
-                .send((
-                    webview_id,
-                    pipeline_id,
-                    ScriptToConstellationMessage::CancelDownload(download_id),
-                ));
+            let _ = self.senders.pipeline_to_constellation_sender.send((
+                webview_id,
+                pipeline_id,
+                ScriptToConstellationMessage::CancelDownload(download_id),
+            ));
             self.abandon_download_navigation(webview_id, pipeline_id);
         }
     }
@@ -4316,7 +4309,10 @@ impl ScriptThread {
         }
         let removed = {
             let mut loads = self.incomplete_loads.borrow_mut();
-            match loads.iter().position(|load| load.pipeline_id == pipeline_id) {
+            match loads
+                .iter()
+                .position(|load| load.pipeline_id == pipeline_id)
+            {
                 Some(idx) => {
                     loads.remove(idx);
                     true
@@ -4347,10 +4343,7 @@ impl ScriptThread {
         if decision == AllowOrDeny::Allow {
             warn!("Download allow is not implemented yet; treating as deny");
         }
-        cancel_async_fetch(
-            vec![parked.request_id],
-            &self.resource_threads.core_thread,
-        );
+        cancel_async_fetch(vec![parked.request_id], &self.resource_threads.core_thread);
         self.abandon_download_navigation(parked.webview_id, parked.pipeline_id);
     }
 
@@ -4390,8 +4383,8 @@ impl ScriptThread {
             // we need to register an iframe entry to the performance timeline if present
             if let Some(window_proxy) = context
                 .get_document()
-                .and_then(|document| document.browsing_context()) &&
-                let Some(frame_element) = window_proxy.frame_element()
+                .and_then(|document| document.browsing_context())
+                && let Some(frame_element) = window_proxy.frame_element()
             {
                 let iframe_ctx = IframeContext::new(
                     frame_element
@@ -4590,8 +4583,8 @@ impl ScriptThread {
             return;
         };
 
-        if let Some(window) = self.documents.borrow().find_window(pipeline_id) &&
-            window.live_devtools_updates()
+        if let Some(window) = self.documents.borrow().find_window(pipeline_id)
+            && window.live_devtools_updates()
         {
             let css_error = CSSError {
                 filename,
