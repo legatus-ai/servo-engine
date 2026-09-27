@@ -1,0 +1,61 @@
+# Unit tests for the real-site benchmark's pure parts (medians, crash
+# classification, pixel diff, JSON schema, report). Fast, no browsers.
+name: Real-site benchmark tests
+
+on:
+  pull_request:
+    paths:
+      - "realsites/**"
+      - ".github/workflows/realsites*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "realsites/**"
+      - ".github/workflows/realsites*.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            realsites
+            .github/workflows
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        working-directory: realsites
+        run: python -m unittest discover -s tests -t . -v
+      - name: Pillow smoke test (thumbnail path)
+        working-directory: realsites
+        run: |
+          python -m pip install --quiet "pillow==11.3.0"
+          python - <<'EOF'
+          import os, tempfile
+          from PIL import Image
+          from rs import pixeldiff
+          d = tempfile.mkdtemp()
+          a, b = os.path.join(d, "a.png"), os.path.join(d, "b.png")
+          Image.new("RGB", (1280, 800), (255, 255, 255)).save(a)
+          im = Image.new("RGB", (1280, 700), (255, 255, 255)); im.save(b)
+          ra, rb = pixeldiff.load_rgb(a, 1280, 800), pixeldiff.load_rgb(b, 1280, 800)
+          pct = pixeldiff.diff_percent(ra, rb, 1280, 800)
+          assert pct == 12.5, pct
+          names = pixeldiff.write_thumbs(a, b, os.path.join(d, "t"), 1280, 800)
+          assert all(os.path.getsize(p) > 0 for p in names.values()), names
+          print("pixel diff", pct, "thumbs", sorted(names))
+          EOF
+      - name: Lint workflows
+        run: |
+          curl -sSfL -o /tmp/actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -shellcheck= .github/workflows/realsites*.yml
