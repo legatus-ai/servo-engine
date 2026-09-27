@@ -4295,7 +4295,43 @@ impl ScriptThread {
                     pipeline_id,
                     ScriptToConstellationMessage::CancelDownload(download_id),
                 ));
+            self.abandon_download_navigation(webview_id, pipeline_id);
         }
+    }
+
+    /// A download never commits a document; its pipeline is always
+    /// abandoned, whatever the embedder decides (deny, allow, or no answer
+    /// before the deadline), and this stays true once file writing lands.
+    ///
+    /// A download that came from a hyperlink was fetched into a NEW
+    /// pipeline (row #9b), which the constellation holds as the webview's
+    /// pending change until it commits. It never will: drop its incomplete
+    /// load and abort it as a 204 navigation is aborted, so the pending
+    /// change goes and screenshot readiness is asked again. Without this
+    /// every later screenshot of the webview waits forever.
+    /// A same-pipeline load has a live window and nothing pending: left be.
+    fn abandon_download_navigation(&self, webview_id: WebViewId, pipeline_id: PipelineId) {
+        if self.documents.borrow().find_window(pipeline_id).is_some() {
+            return;
+        }
+        let removed = {
+            let mut loads = self.incomplete_loads.borrow_mut();
+            match loads.iter().position(|load| load.pipeline_id == pipeline_id) {
+                Some(idx) => {
+                    loads.remove(idx);
+                    true
+                },
+                None => false,
+            }
+        };
+        if !removed {
+            return;
+        }
+        let _ = self.senders.pipeline_to_constellation_sender.send((
+            webview_id,
+            pipeline_id,
+            ScriptToConstellationMessage::AbortLoadUrl,
+        ));
     }
 
     /// Apply the embedder's download answer. Deny (or allow, until file
@@ -4312,7 +4348,7 @@ impl ScriptThread {
             vec![parked.request_id],
             &self.resource_threads.core_thread,
         );
-        let _ = parked.pipeline_id;
+        self.abandon_download_navigation(parked.webview_id, parked.pipeline_id);
     }
 
     fn handle_fetch_chunk(
