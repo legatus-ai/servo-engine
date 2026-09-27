@@ -170,6 +170,14 @@ class Scope(unittest.TestCase):
         # A prefix must match whole path segments.
         self.assertEqual(generate.scope_tests({"/css/css-grid-2/x.html": {}}, "css/css-grid"), {})
 
+    def test_js_source_path_matches_generated_test_ids(self):
+        tests = {name: {} for name in (
+            "/dom/x.any.html", "/dom/x.any.worker.html", "/dom/x.any.html?v=1",
+            "/dom/y.window.html", "/dom/x.anything.html", "/dom/x.any.js")}
+        self.assertEqual(sorted(generate.scope_tests(tests, "dom/x.any.js dom/y.window.js")),
+                         ["/dom/x.any.html", "/dom/x.any.html?v=1",
+                          "/dom/x.any.worker.html", "/dom/y.window.html"])
+
     def test_empty_subsets_mean_everything(self):
         chrome = generate.fyi_tests(CHROME)
         self.assertEqual(generate.scope_tests(chrome, ""), chrome)
