@@ -1,0 +1,31 @@
+# Unit tests for the web-compat scorer (scoreboard/generate.py). Standard
+# library only, no Servo build: runs in seconds on every PR that touches the
+# scorer or the scoreboard workflow.
+name: Scoreboard scorer tests
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "scoreboard/**"
+      - ".github/workflows/scoreboard.yml"
+      - ".github/workflows/scoreboard-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scoreboard
+            .github/workflows
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Run scorer tests
+        run: python3 -m unittest discover -s scoreboard -p 'test_*.py' -v

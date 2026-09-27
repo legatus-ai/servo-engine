@@ -3,6 +3,7 @@
 # Registered from main (schedule + dispatch only register on the default
 # branch) but builds and tests the `legatus` branch: main needs nothing
 # else from us. Nightly + manual only: never runs on pull_request.
+# The scorer (scoreboard/generate.py) lives beside this file on main.
 name: Web-compat scoreboard
 
 on:
@@ -11,13 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       wpt-subsets:
-        description: "WPT path filters (empty = full suite)"
+        description: "WPT path filters (empty = nightly default: all of css/ plus the extra areas; 'all' = full suite)"
         default: ""
         required: false
         type: string
       chunks:
-        description: "Number of WPT shards"
-        default: "4"
+        description: "Number of WPT shards, 1..20 (empty = nightly default)"
+        default: ""
         required: false
         type: string
 
@@ -35,6 +36,15 @@ env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   GST_PLUGIN_FEATURE_RANK: pulsesink:NONE,alsasink:NONE,jacksink:NONE,fakesink:MAX
+  # Nightly default: the whole css/ directory plus the extra areas
+  # (selection, editing, range-geometry, downloads, user-activation; see
+  # AREAS in scoreboard/generate.py). range-geometry is css/cssom-view,
+  # already inside css/.
+  NIGHTLY_WPT_SUBSETS: "css selection editing contenteditable html/links FileAPI html/user-activation"
+  # About 35.5k test ids. The last run measured ~0.2 s of wall time per test
+  # on a 4-core runner, so 16 id_hash shards land around 20-35 minutes each,
+  # timeouts included: far from the 6 h job limit and under the 90 min aim.
+  NIGHTLY_CHUNKS: "16"
 
 jobs:
   setup:
@@ -42,30 +52,42 @@ jobs:
     outputs:
       chunks: ${{ steps.ids.outputs.chunks }}
       count: ${{ steps.ids.outputs.count }}
+      subsets: ${{ steps.ids.outputs.subsets }}
     steps:
       - id: ids
         # Inputs reach the shell only through env (never `${{ }}` in `run:`),
-        # then are validated: chunks is an integer 1..16, subsets may only
+        # then are validated: chunks is an integer 1..20, subsets may only
         # contain path characters, so the later unquoted expansion is safe.
         env:
-          CHUNKS: ${{ inputs.chunks || '4' }}
+          CHUNKS: ${{ inputs.chunks || '' }}
           WPT_SUBSETS: ${{ inputs.wpt-subsets || '' }}
         run: |
+          CHUNKS=${CHUNKS:-$NIGHTLY_CHUNKS}
           case "$CHUNKS" in
-            ''|*[!0-9]*|0*) echo "chunks must be an integer 1..16, got '$CHUNKS'"; exit 1;;
+            ''|*[!0-9]*|0*) echo "chunks must be an integer 1..20, got '$CHUNKS'"; exit 1;;
           esac
-          if [ "$CHUNKS" -gt 16 ]; then echo "chunks must be 1..16, got '$CHUNKS'"; exit 1; fi
+          if [ "$CHUNKS" -gt 20 ]; then echo "chunks must be 1..20, got '$CHUNKS'"; exit 1; fi
+          case "$WPT_SUBSETS" in
+            '') WPT_SUBSETS=$NIGHTLY_WPT_SUBSETS;;
+            all) WPT_SUBSETS='';;
+          esac
           case "$WPT_SUBSETS" in
             *[!A-Za-z0-9_./\ -]*) echo "wpt-subsets has illegal characters: '$WPT_SUBSETS'"; exit 1;;
           esac
+          echo "WPT subsets: ${WPT_SUBSETS:-(full suite)}; shards: $CHUNKS"
           echo "chunks=$(seq 1 "$CHUNKS" | jq -R . | jq -s -c 'map(tonumber)')" >> "$GITHUB_OUTPUT"
           echo "count=$CHUNKS" >> "$GITHUB_OUTPUT"
+          echo "subsets=$WPT_SUBSETS" >> "$GITHUB_OUTPUT"
 
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     permissions:
       actions: write
+    outputs:
+      # The legatus commit that was built. The shards test this exact tree
+      # and the page records it, even if legatus moves mid-run.
+      sha: ${{ steps.rev.outputs.sha }}
     env:
       # legatus-ai/stylo is private: cargo fetches it with the git CLI over
       # SSH, using the read-only deploy key loaded below.
@@ -81,6 +103,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: legatus
+      - name: Record legatus commit
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Load stylo deploy key
         uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
@@ -130,7 +155,10 @@ jobs:
   wpt:
     needs: [setup, build]
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    # A shard is expected to take 20-35 minutes plus ~5 of setup. 120 caps a
+    # hung shard well short of the 6 h limit; the others keep going
+    # (fail-fast off) and the page marks the missing one.
+    timeout-minutes: 120
     permissions:
       actions: write
     strategy:
@@ -144,10 +172,10 @@ jobs:
           tool-cache: false
           large-packages: false
           swap-storage: false
-      - name: Checkout legatus
+      - name: Checkout legatus (the built commit)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: legatus
+          ref: ${{ needs.build.outputs.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python
       - name: Bootstrap dependencies
@@ -166,11 +194,14 @@ jobs:
       - name: Unpack binary
         run: tar -xzf servo-tech-demo.tar.gz
       - name: Run WPT shard
+        timeout-minutes: 105
         # Unquoted on purpose: validated in setup (path chars only), and the
         # subsets must word-split into separate test paths.
         # shellcheck disable=SC2086
         env:
-          WPT_SUBSETS: ${{ inputs.wpt-subsets || '' }}
+          WPT_SUBSETS: ${{ needs.setup.outputs.subsets }}
+          CHUNK_COUNT: ${{ needs.setup.outputs.count }}
+          CHUNK_ID: ${{ matrix.chunk_id }}
         # The scoreboard measures; it does not gate. mach exits 1 whenever any
         # result differs from upstream's expectation files, which the fork's
         # own improvements always cause. --always-succeed zeroes only that
@@ -178,12 +209,14 @@ jobs:
         # must still have written a report with results.
         run: |
           nproc=$(nproc)
-          report=wptreport-${{ matrix.chunk_id }}.json
+          report="wptreport-$CHUNK_ID.json"
+          # mach's wpt wrapper defaults to id_hash chunking, which spreads
+          # tests evenly across shards regardless of directory size.
           ./mach test-wpt \
             --bin servo/servoshell \
             --release --headless --always-succeed \
             --processes "$nproc" --timeout-multiplier 2 \
-            --total-chunks ${{ needs.setup.outputs.count }} --this-chunk ${{ matrix.chunk_id }} \
+            --total-chunks "$CHUNK_COUNT" --this-chunk "$CHUNK_ID" \
             --log-wptreport "$report" \
             $WPT_SUBSETS
           python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("results") else "empty WPT report: " + sys.argv[1])' "$report"
@@ -196,19 +229,20 @@ jobs:
           if-no-files-found: error
 
   scoreboard:
-    needs: [build, wpt]
+    needs: [setup, build, wpt]
     # No build means no WPT reports: skip instead of failing on an empty set.
-    # Partial shard failures after a good build still publish what ran.
+    # Partial shard failures after a good build still publish what ran, and
+    # the page lists the shards that produced no usable report.
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
       actions: write
     steps:
-      - name: Checkout legatus (generator)
+      - name: Checkout main (generator)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: legatus
           sparse-checkout: scoreboard
           sparse-checkout-cone-mode: false
       - name: Download shard reports
@@ -237,19 +271,26 @@ jobs:
           else
             echo "no scoreboard branch yet; starting history"
           fi
+      - name: Scorer unit tests
+        if: ${{ steps.reports.outputs.found == 'true' }}
+        run: python3 -m unittest discover -s scoreboard -p 'test_*.py'
       - name: Generate data + page
         if: ${{ steps.reports.outputs.found == 'true' }}
+        env:
+          # The legatus commit the build job built and the shards tested.
+          FORK_SHA: ${{ needs.build.outputs.sha }}
+          EXPECTED_SHARDS: ${{ needs.setup.outputs.count }}
         run: |
           DATE=$(date -u +%F)
-          # HEAD is the legatus checkout: record the fork commit we tested.
-          FORK_SHA=$(git rev-parse HEAD)
           mkdir -p site/data
           python3 scoreboard/generate.py \
             --date "$DATE" \
             --fork-sha "$FORK_SHA" \
             --reports wpt-logs/*.json \
+            --expected-shards "$EXPECTED_SHARDS" \
             --history-dir hist \
             --out-data "site/data/$DATE.json" \
+            --out-gaps "site/data/$DATE-gaps.json" \
             --out-html site/index.html
           echo "DATE=$DATE" >> "$GITHUB_ENV"
       - name: Publish to scoreboard branch
@@ -266,8 +307,8 @@ jobs:
             git rm -rf . || true
           fi
           mkdir -p data
-          cp "site/data/$DATE.json" data/
+          cp "site/data/$DATE.json" "site/data/$DATE-gaps.json" data/
           cp site/index.html index.html
-          git add "data/$DATE.json" index.html
+          git add "data/$DATE.json" "data/$DATE-gaps.json" index.html
           git commit -m "scoreboard: $DATE" || echo "nothing to commit"
           git push origin scoreboard
