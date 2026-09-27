@@ -159,6 +159,61 @@ class GapRanking(unittest.TestCase):
         self.assertEqual(gaps["no_subtest_failures"], {"css-grid": 1})
 
 
+class Scope(unittest.TestCase):
+    def test_baselines_scoped_to_requested_subsets(self):
+        chrome = generate.fyi_tests(CHROME)
+        scoped = generate.scope_tests(chrome, "css/css-grid/ selection/e.html")
+        self.assertEqual(sorted(scoped), ["/css/css-grid/a.html",
+                                          "/css/css-grid/b.html",
+                                          "/css/css-grid/g.html?variant=1",
+                                          "/selection/e.html"])
+        # A prefix must match whole path segments.
+        self.assertEqual(generate.scope_tests({"/css/css-grid-2/x.html": {}}, "css/css-grid"), {})
+
+    def test_empty_subsets_mean_everything(self):
+        chrome = generate.fyi_tests(CHROME)
+        self.assertEqual(generate.scope_tests(chrome, ""), chrome)
+        self.assertEqual(generate.scope_tests(chrome, None), chrome)
+
+    def test_scoped_rows_compare_like_with_like(self):
+        fork, _ = generate.load_fork_reports(REPORTS)
+        chrome = generate.scope_tests(generate.fyi_tests(CHROME), "css/css-text")
+        rows = generate.module_rows(
+            generate.aggregate_modules(generate.scope_tests(fork, "css/css-text")),
+            {}, generate.aggregate_modules(chrome))
+        self.assertEqual([(r["module"], r["gap"]) for r in rows], [("css-text", 4)])
+
+
+class NearestRun(unittest.TestCase):
+    def setUp(self):
+        self.orig = generate.http_json
+        self.urls = []
+
+    def tearDown(self):
+        generate.http_json = self.orig
+
+    def fake(self, runs):
+        def http_json(url):
+            self.urls.append(url)
+            return runs
+        generate.http_json = http_json
+
+    def test_asks_wptfyi_for_runs_up_to_the_date(self):
+        self.fake([{"id": 7, "time_start": "2026-09-26T06:00:00Z"}])
+        self.assertEqual(generate.nearest_run("chrome", "2026-09-27")["id"], 7)
+        self.assertIn("to=2026-09-27T23:59:59Z", self.urls[0])
+
+    def test_never_returns_a_newer_run(self):
+        self.fake([{"id": 8, "time_start": "2026-09-28T06:00:00Z"}])
+        with self.assertRaises(SystemExit):
+            generate.nearest_run("chrome", "2026-09-27")
+
+    def test_no_runs_is_a_clear_error(self):
+        self.fake([])
+        with self.assertRaises(SystemExit):
+            generate.nearest_run("servo", "2026-09-27")
+
+
 class Page(unittest.TestCase):
     def test_render_has_module_table_totals_and_missing_shards(self):
         fork, present = generate.load_fork_reports(REPORTS)
