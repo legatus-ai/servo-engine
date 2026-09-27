@@ -255,12 +255,33 @@ def http_json(url):
 def nearest_run(product, date):
     """Latest master run for product with time_start on or before date."""
     runs = http_json(
-        f"{WPTFYI}/api/runs?label=master&product={product}&max-count=10"
+        f"{WPTFYI}/api/runs?label=master&product={product}"
+        f"&max-count=10&to={date}T23:59:59Z"
     )
-    for run in runs:
+    for run in runs or []:
         if run.get("time_start", "")[:10] <= date:
             return run
-    return runs[0]
+    raise SystemExit(f"no wpt.fyi {product} master run on or before {date}")
+
+
+def scope_tests(tests, subsets):
+    """Keep only tests under the requested WPT paths (space-separated,
+    relative, as passed to mach). Empty or None means everything.
+
+    The fork only ran these paths, so the baselines must be cut the same
+    way for module and area comparisons to be like with like.
+    """
+    paths = [p.strip("/") for p in (subsets or "").split() if p.strip("/")]
+    if not paths:
+        return tests
+    exact = {"/" + p for p in paths}
+    dirs = tuple("/" + p + "/" for p in paths)
+
+    def keep(name):
+        base = name.split("?", 1)[0]
+        return base in exact or name.startswith(dirs)
+
+    return {name: r for name, r in tests.items() if keep(name)}
 
 
 # --- output
@@ -402,6 +423,8 @@ td:first-child,th:first-child{{text-align:left}}.warn{{background:#fff3cd;paddin
 (<code>{esc(runs["upstream"].get("version", ""))}</code>) vs Chrome
 (<code>{esc(runs["chrome"].get("version", ""))}</code>).
 Pass rate = passed subtests / total subtests. Method: scoreboard/README.md.</p>
+<p>WPT paths run (all three sides are scored on these only):
+<code>{esc(" ".join(data.get("subsets") or []) or "full suite")}</code></p>
 {warn}
 <h2>Areas</h2>
 <table><tr><th>area</th><th>fork</th><th>upstream</th><th>chrome</th>
@@ -460,6 +483,8 @@ def main():
     ap.add_argument("--fork-sha", required=True)
     ap.add_argument("--reports", nargs="+", required=True)
     ap.add_argument("--expected-shards", type=int, default=None)
+    ap.add_argument("--subsets", default="",
+                    help="WPT paths the fork ran (space-separated); empty = full suite")
     ap.add_argument("--history-dir", default=None)
     ap.add_argument("--out-data", required=True)
     ap.add_argument("--out-gaps", default=None)
@@ -475,11 +500,13 @@ def main():
     chrome_run = nearest_run("chrome", args.date)
     print(f"upstream: servo run {upstream_run['id']} ({upstream_run.get('time_start','')[:10]})", flush=True)
     print(f"chrome: run {chrome_run['id']} ({chrome_run.get('time_start','')[:10]})", flush=True)
-    upstream = fyi_tests(http_json(upstream_run["results_url"]))
-    chrome = fyi_tests(http_json(chrome_run["results_url"]))
+    fork = scope_tests(fork, args.subsets)
+    upstream = scope_tests(fyi_tests(http_json(upstream_run["results_url"])), args.subsets)
+    chrome = scope_tests(fyi_tests(http_json(chrome_run["results_url"])), args.subsets)
 
     data = build_data(args.date, args.fork_sha, fork, upstream, chrome,
                       upstream_run, chrome_run, args.expected_shards, present)
+    data["subsets"] = args.subsets.split()
     if data["shards"]["missing"]:
         print(f"::warning::missing shards: {data['shards']['missing']}", flush=True)
     history = load_history(args.history_dir, args.date)

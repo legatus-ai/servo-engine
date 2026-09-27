@@ -24,7 +24,12 @@ https://legatus-ai.github.io/servo-engine/.
   (`/api/runs` for the latest `master` run of `product=servo` /
   `product=chrome`, then that run's summary file). The fork SHA never
   appears on wpt.fyi, so alignment is nearest-date on-or-before the fork
-  date; each data file records both revisions.
+  date (the API is asked for runs up to the end of that day, and the
+  scorer fails rather than use a newer one); each data file records both
+  revisions.
+- All three sides are cut to the WPT paths the fork ran (`--subsets`, the
+  same list passed to mach), so a manual run on part of a module compares
+  like with like. The page and data file record those paths.
 - Only `GITHUB_TOKEN` is used. No Chrome is ever executed here.
 
 ## What runs

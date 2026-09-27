@@ -280,6 +280,8 @@ jobs:
           # The legatus commit the build job built and the shards tested.
           FORK_SHA: ${{ needs.build.outputs.sha }}
           EXPECTED_SHARDS: ${{ needs.setup.outputs.count }}
+          # Validated in setup; the baselines are cut to the same paths.
+          WPT_SUBSETS: ${{ needs.setup.outputs.subsets }}
         run: |
           DATE=$(date -u +%F)
           mkdir -p site/data
@@ -288,6 +290,7 @@ jobs:
             --fork-sha "$FORK_SHA" \
             --reports wpt-logs/*.json \
             --expected-shards "$EXPECTED_SHARDS" \
+            --subsets "$WPT_SUBSETS" \
             --history-dir hist \
             --out-data "site/data/$DATE.json" \
             --out-gaps "site/data/$DATE-gaps.json" \
