@@ -1,0 +1,4 @@
+__pycache__/
+# The private pane bundle is fetched at run time and must never be committed.
+snapshots/pane/
+snapshots/__warmup.html

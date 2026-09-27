@@ -1,0 +1,236 @@
+# Real-site benchmark: Servo (legatus fork) vs pinned headless Chrome on ~30
+# pinned page snapshots, nightly. Load time, crash/hang stability and visual
+# diff; published as realsites.html + data/realsites-<date>.json on the
+# `scoreboard` branch (Pages), next to the WPT scoreboard.
+#
+# It does not build Servo: it reuses the newest `scoreboard-binary` artifact
+# uploaded by the Web-compat scoreboard workflow (scoreboard.yml), which
+# builds the `legatus` branch. Registered from main; nightly + manual only.
+name: Real-site benchmark
+
+on:
+  schedule:
+    # Two and a half hours after scoreboard.yml starts, so its build job
+    # (which uploads the binary) has normally finished.
+    - cron: "30 8 * * *"
+  workflow_dispatch:
+    inputs:
+      servo-run-id:
+        description: "Scoreboard run id to take the Servo binary from (empty = newest available)"
+        default: ""
+        required: false
+        type: string
+      only:
+        description: "Comma-separated site ids (empty = all)"
+        default: ""
+        required: false
+        type: string
+      publish:
+        description: "Publish to the scoreboard branch"
+        default: true
+        required: false
+        type: boolean
+
+concurrency:
+  group: realsites
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-22.04 # same image as the scoreboard build, for glibc parity
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: read # download the scoreboard workflow's artifact
+    env:
+      HAS_PANE_KEY: ${{ secrets.PANE_DEPLOY_KEY != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: realsites
+          sparse-checkout-cone-mode: false
+
+      - name: Validate inputs
+        env:
+          SERVO_RUN_ID: ${{ inputs.servo-run-id || '' }}
+          ONLY: ${{ inputs.only || '' }}
+        run: |
+          case "$SERVO_RUN_ID" in
+            *[!0-9]*) echo "servo-run-id must be digits, got '$SERVO_RUN_ID'"; exit 1;;
+          esac
+          case "$ONLY" in
+            *[!a-z0-9,-]*) echo "only: site ids are [a-z0-9-], comma-separated; got '$ONLY'"; exit 1;;
+          esac
+
+      - name: Download the Servo build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVO_RUN_ID: ${{ inputs.servo-run-id || '' }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          if [ -z "$SERVO_RUN_ID" ]; then
+            art=$(gh api "repos/$repo/actions/artifacts?name=scoreboard-binary&per_page=30" \
+              --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0]')
+          else
+            art=$(gh api "repos/$repo/actions/runs/$SERVO_RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "scoreboard-binary" and .expired == false)] | .[0]')
+          fi
+          if [ -z "$art" ] || [ "$art" = "null" ]; then
+            echo "::error::no unexpired scoreboard-binary artifact found; run the Web-compat scoreboard workflow first"
+            exit 1
+          fi
+          run_id=$(jq -r '.workflow_run.id' <<<"$art")
+          created=$(jq -r '.created_at' <<<"$art")
+          started=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.run_started_at')
+          # The build checks out `legatus` at the start of its run: the newest
+          # legatus commit at that moment is the one it built.
+          sha=$(gh api "repos/$repo/commits?sha=legatus&until=$started&per_page=1" --jq '.[0].sha' || echo "")
+          echo "Servo from scoreboard run $run_id (artifact $created, legatus ${sha:-unknown})"
+          mkdir -p "$RUNNER_TEMP/servo"
+          gh run download "$run_id" -R "$repo" -n scoreboard-binary -D "$RUNNER_TEMP/servo"
+          tar -xzf "$RUNNER_TEMP/servo/servo-tech-demo.tar.gz" -C "$RUNNER_TEMP/servo"
+          echo "SERVO_BIN=$RUNNER_TEMP/servo/servo/servoshell" >> "$GITHUB_ENV"
+          jq -n --argjson id "$run_id" --arg created "$created" --arg sha "$sha" \
+            '{build_run_id: $id, artifact_created_at: $created, legatus_sha: (if $sha == "" then null else $sha end)}' \
+            > "$RUNNER_TEMP/servo-meta.json"
+
+      - name: Install Servo runtime libraries
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          # Runtime subset of python/servo/platform/linux_packages/apt/*.txt
+          # on the legatus branch (what `mach bootstrap` installs), plus the
+          # fonts the WPT jobs use.
+          sudo apt-get install -qy --no-install-recommends \
+            libdbus-1-dev libfreetype6-dev libgl1-mesa-dri libgles2-mesa-dev libglib2.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-base libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav libgstrtspserver-1.0-dev libges-1.0-dev libgstreamer-plugins-good1.0-dev \
+            libharfbuzz-dev liblzma-dev libudev-dev libunwind-dev libvulkan1 libx11-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxmu6 libegl1-mesa-dev \
+            libxkbcommon0 libxkbcommon-x11-0 mesa-vulkan-drivers fonts-noto-cjk fonts-dejavu-extra
+          sudo apt-get purge -qy fonts-droid-fallback || true
+          if ldd "$SERVO_BIN" | grep 'not found'; then
+            echo "::error::servoshell is missing shared libraries (above)"
+            exit 1
+          fi
+
+      - name: Install pinned Chrome for Testing
+        run: bash realsites/install-chrome.sh >> "$GITHUB_ENV"
+
+      - name: Load pane deploy key
+        if: env.HAS_PANE_KEY == 'true'
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.PANE_DEPLOY_KEY }}
+
+      - name: Fetch the pane's UI bundle (private, never committed)
+        if: env.HAS_PANE_KEY == 'true'
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --filter=blob:none --sparse --branch release \
+            git@github.com:legatus-ai/legatus-terminal-pane.git "$RUNNER_TEMP/pane"
+          git -C "$RUNNER_TEMP/pane" sparse-checkout set ui/dist
+          mkdir -p realsites/snapshots/pane
+          cp "$RUNNER_TEMP/pane/ui/dist/pane.js" realsites/snapshots/pane/pane.js
+          cp realsites/pane-host.html realsites/snapshots/pane/index.html
+
+      - name: Run the benchmark (offline network namespace)
+        env:
+          ONLY: ${{ inputs.only || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p realsites/snapshots "$RUNNER_TEMP/out"
+          # Only loopback exists in this namespace: a snapshot that still
+          # references the live web fails fast instead of timing the network.
+          sudo ip netns add rsbench
+          sudo ip netns exec rsbench ip link set lo up
+          sudo ip netns exec rsbench sudo -u "$USER" env "PATH=$PATH" "HOME=$HOME" RUST_BACKTRACE=1 \
+            python3 realsites/bench.py \
+              --servo "$SERVO_BIN" \
+              --chrome "$CHROME_BIN" \
+              --chromedriver "$CHROMEDRIVER_BIN" \
+              --out "$RUNNER_TEMP/out" \
+              --runs 3 --hang-timeout 60 --settle 2 \
+              --only "$ONLY"
+          cp "$RUNNER_TEMP/servo-meta.json" "$RUNNER_TEMP/out/servo-meta.json"
+
+      - name: Upload raw results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: realsites-raw
+          path: ${{ runner.temp }}/out
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    needs: bench
+    if: ${{ !cancelled() && needs.bench.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # push the scoreboard branch
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: realsites
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Download raw results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: realsites-raw
+          path: raw
+      - name: Checkout scoreboard branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: scoreboard
+          path: pub
+      - name: Generate data + page
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "pillow==11.3.0"
+          DATE=$(date -u +%F)
+          echo "DATE=$DATE" >> "$GITHUB_ENV"
+          python realsites/report.py \
+            --raw-dir raw \
+            --date "$DATE" \
+            --servo-meta raw/servo-meta.json \
+            --history-dir pub/data \
+            --out-dir site
+      - name: Publish to scoreboard branch
+        if: ${{ github.event_name == 'schedule' || inputs.publish }}
+        working-directory: pub
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # scoreboard.yml publishes to the same branch; our files are
+          # disjoint from its, so on a race just redo on top of the new tip.
+          for attempt in 1 2 3; do
+            git fetch --quiet origin scoreboard
+            git reset --quiet --hard FETCH_HEAD
+            mkdir -p data
+            rm -rf realsites-thumbs
+            cp "../site/data/realsites-$DATE.json" data/
+            cp ../site/realsites.html realsites.html
+            cp -r ../site/realsites-thumbs realsites-thumbs
+            git add -A data/realsites-*.json realsites.html realsites-thumbs
+            git commit --quiet -m "realsites: $DATE" || { echo "nothing to commit"; exit 0; }
+            if git push --quiet origin HEAD:scoreboard; then
+              echo "published https://legatus-ai.github.io/servo-engine/realsites.html"
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt), retrying on the new tip"
+            sleep $((attempt * 10))
+          done
+          echo "::error::could not publish after 3 attempts"
+          exit 1

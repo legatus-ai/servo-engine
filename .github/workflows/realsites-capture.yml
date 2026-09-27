@@ -1,0 +1,59 @@
+# Refresh the real-site snapshots: saves each pinned page with SingleFile and
+# the pinned Chrome, then uploads them as the `realsites-snapshots` artifact.
+# Manual only. A person reviews the artifact and commits it under
+# realsites/snapshots/ in a PR (see realsites/README.md); nothing is pushed.
+name: Real-site snapshot capture
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated site ids to capture (empty = all)"
+        default: ""
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SINGLE_FILE_VERSION: "2.15.8"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: realsites
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Install pinned Chrome for Testing
+        run: bash realsites/install-chrome.sh >> "$GITHUB_ENV"
+      - name: Install SingleFile CLI
+        run: |
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/sf" "single-file-cli@${SINGLE_FILE_VERSION}"
+          echo "SINGLE_FILE_BIN=$RUNNER_TEMP/sf/node_modules/.bin/single-file" >> "$GITHUB_ENV"
+      - name: Capture
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          case "$ONLY" in
+            *[!a-z0-9,-]*) echo "only: site ids are [a-z0-9-], comma-separated; got '$ONLY'"; exit 1;;
+          esac
+          python3 realsites/capture.py \
+            --out "$RUNNER_TEMP/snapshots" \
+            --single-file "$SINGLE_FILE_BIN" \
+            --chrome "$CHROME_BIN" \
+            --chrome-version "$CHROME_VERSION" \
+            --single-file-version "$SINGLE_FILE_VERSION" \
+            --only "$ONLY"
+      - name: Upload snapshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: realsites-snapshots
+          path: ${{ runner.temp }}/snapshots
+          if-no-files-found: error
+          retention-days: 14

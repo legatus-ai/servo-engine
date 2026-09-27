@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Legatus Terminal Pane shell</title>
+<style>html, body, #root { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<!-- Host page for the pane's UI bundle (ui/dist/pane.js from the private
+     legatus-ai/legatus-terminal-pane repo). The workflow copies it next to
+     pane.js at run time; the bundle itself is never committed here. -->
+<div id="root"></div>
+<script src="pane.js"></script>
+<script>window.LegatusPane.mount(document.getElementById("root"));</script>
+</body>
+</html>
