@@ -1338,6 +1338,13 @@ impl From<stylo::Display> for Display {
             stylo::DisplayInside::Flex => DisplayInside::Flex,
             stylo::DisplayInside::Grid => DisplayInside::Grid,
             stylo::DisplayInside::Table => DisplayInside::Table,
+            // Legatus Row 13: an unclamped `-webkit-box` keeps its computed
+            // display (Servo layout has no legacy flexbox), so lay it out as
+            // block-level flow — identical to the old drop-the-declaration
+            // behavior, zero layout change.
+            stylo::DisplayInside::WebkitBox => DisplayInside::Flow {
+                is_list_item: packed.is_list_item(),
+            },
 
             // These should not be values of DisplayInside, but oh well
             stylo::DisplayInside::None => return Display::None,
