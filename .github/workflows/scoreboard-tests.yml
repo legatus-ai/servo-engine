@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   unittest:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     timeout-minutes: 10
     steps:
       - name: Checkout
