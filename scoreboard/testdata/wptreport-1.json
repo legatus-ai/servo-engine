@@ -1,0 +1,22 @@
+{
+  "run_info": {"product": "servo", "os": "linux"},
+  "time_start": 1790468050517,
+  "time_end": 1790468139419,
+  "results": [
+    {"test": "/css/css-grid/a.html", "status": "OK", "subtests": [
+      {"name": "a1", "status": "PASS"},
+      {"name": "a2", "status": "FAIL"},
+      {"name": "a3", "status": "FAIL"}
+    ], "duration": 120},
+    {"test": "/css/css-grid/b.html", "status": "FAIL", "subtests": [], "duration": 80},
+    {"test": "/css/css-flexbox/c.html", "status": "OK", "subtests": [
+      {"name": "c1", "status": "PASS"},
+      {"name": "c2", "status": "PASS"}
+    ], "duration": 90},
+    {"test": "/css/css-flexbox/d.html", "status": "PASS", "subtests": [], "duration": 70},
+    {"test": "/selection/e.html", "status": "OK", "subtests": [
+      {"name": "e1", "status": "PASS"},
+      {"name": "e2", "status": "FAIL"}
+    ], "duration": 60}
+  ]
+}

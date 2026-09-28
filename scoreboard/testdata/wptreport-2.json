@@ -1,0 +1,19 @@
+{
+  "run_info": {"product": "servo", "os": "linux"},
+  "time_start": 1790468050517,
+  "time_end": 1790468139419,
+  "results": [
+    {"test": "/css/css-text/f.html", "status": "OK", "subtests": [
+      {"name": "f1", "status": "FAIL"},
+      {"name": "f2", "status": "FAIL"},
+      {"name": "f3", "status": "TIMEOUT"},
+      {"name": "f4", "status": "FAIL"}
+    ], "duration": 200},
+    {"test": "/css/css-grid/g.html?variant=1", "status": "OK", "subtests": [
+      {"name": "g1", "status": "FAIL"},
+      {"name": "g2", "status": "PASS"}
+    ], "duration": 110},
+    {"test": "/css/css-flexbox/crashtests/h.html", "status": "PASS", "subtests": [], "duration": 40},
+    {"test": "/css/css-flexbox/skip.html", "status": "SKIP", "subtests": [], "duration": 0}
+  ]
+}
